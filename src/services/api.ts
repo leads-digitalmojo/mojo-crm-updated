@@ -1,6 +1,6 @@
 import { db } from '../lib/firebase';
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, getDoc, arrayUnion, query, orderBy, onSnapshot, where, startAfter, limit, setDoc } from 'firebase/firestore';
-import { Contact, Opportunity, Appointment, Conversation, Message, Notification } from '../types';
+import { Contact, Opportunity, Appointment, Conversation, Message, Notification, LoginLog } from '../types';
 import { isDemoMode } from '../lib/demoData';
 import { mockApi } from './mockApi';
 
@@ -544,6 +544,17 @@ const firebaseApi = {
                     callback(docSnap.data().stages);
                 }
             });
+        }
+    },
+    logs: {
+        getAll: async (limitCount = 50) => {
+            const q = query(collection(db, 'login_logs'), orderBy('timestamp', 'desc'), limit(limitCount));
+            const querySnapshot = await getDocs(q);
+            return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as LoginLog));
+        },
+        create: async (log: Omit<LoginLog, 'id'>) => {
+            const docRef = await addDoc(collection(db, 'login_logs'), log);
+            return { id: docRef.id, ...log } as LoginLog;
         }
     }
 };

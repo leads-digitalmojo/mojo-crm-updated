@@ -1,4 +1,4 @@
-import { Contact, Opportunity, Appointment, Conversation, Message } from '../types';
+import { Contact, Opportunity, Appointment, Conversation, Message, LoginLog } from '../types';
 import {
   generateDemoContacts,
   generateDemoOpportunities,
@@ -454,6 +454,20 @@ export const mockApi = {
       const stages = getStoredData<any>('demo_pipeline', []);
       callback(stages);
       return () => { };
+    }
+  },
+  logs: {
+    getAll: async (limitCount = 50) => {
+      await delay(300);
+      return getStoredData<LoginLog>('demo_login_logs', []);
+    },
+    create: async (log: Omit<LoginLog, 'id'>) => {
+      await delay(200);
+      const logs = getStoredData<LoginLog>('demo_login_logs', []);
+      const newLog: LoginLog = { id: generateId(), ...log };
+      logs.unshift(newLog);
+      saveStoredData('demo_login_logs', logs.slice(0, 100)); // Keep last 100
+      return newLog;
     }
   }
 };

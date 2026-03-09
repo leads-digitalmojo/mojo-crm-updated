@@ -4,13 +4,10 @@ service cloud.firestore {
     // Function to check if user is from the Digital Mojo team
     function isAuthorized() {
       return request.auth != null && (
-        request.auth.token.email.lower() == 'komal@digitalmojo.in' ||
         request.auth.token.email.lower() == 'dhiraj@digitalmojo.in' ||
         request.auth.token.email.lower() == 'rupal@digitalmojo.in' ||
-        request.auth.token.email.lower() == 'aditi@digitalmojo.in' ||
         request.auth.token.email.lower() == 'veda@digitalmojo.in' ||
-        request.auth.token.email.lower() == 'abiram@digitalmojo.in' ||
-        request.auth.token.email.lower() == 'pavan@digitalmojo.in'
+        request.auth.token.email.lower() == 'srishti@digitalmojo.in'
       );
     }
 

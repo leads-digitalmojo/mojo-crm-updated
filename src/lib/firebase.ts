@@ -17,8 +17,13 @@ export const db = getFirestore(app);
 export const auth = getAuth(app);
 export const storage = getStorage(app);
 
-// 🔥 Connect to emulators when running on localhost
-if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
+// 🔥 Connect to emulators when running on localhost or local IP
+const isLocalhost = typeof window !== 'undefined' &&
+    (window.location.hostname === 'localhost' ||
+        window.location.hostname === '127.0.0.1' ||
+        window.location.hostname.startsWith('192.168.'));
+
+if (isLocalhost) {
     console.log('🔥 Connected to Firebase Emulators - ZERO reads billed!');
 
     // Connect Firestore to emulator

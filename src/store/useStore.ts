@@ -1,8 +1,9 @@
 import { create } from 'zustand';
-import { Contact, Opportunity, Appointment, Conversation, Notification, Message, User } from '../types';
+import { Contact, Opportunity, Appointment, Conversation, Notification, Message, User, LoginLog } from '../types';
 import { api } from '../services/api';
 import { auth } from '../lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { isUserAllowed } from '../lib/admin';
 import { isDemoMode, DEFAULT_STAGES } from '../lib/demoData';
 
 interface AppState {
@@ -59,6 +60,9 @@ interface AppState {
 
     notifications: Notification[];
     fetchNotifications: () => Promise<void>;
+
+    loginLogs: LoginLog[];
+    fetchLoginLogs: () => Promise<void>;
 
     // Dashboard Stats
     dashboardStats: {
@@ -122,6 +126,16 @@ export const useStore = create<AppState>((set, get) => ({
 
         onAuthStateChanged(auth, (user) => {
             if (user) {
+                // ACTIVE SECURITY: If user is logged in but no longer on the whitelist, kick them out
+                if (!isUserAllowed(user.email)) {
+                    signOut(auth);
+                    set({
+                        currentUser: null,
+                        isLoadingAuth: false
+                    });
+                    return;
+                }
+
                 set({
                     currentUser: {
                         id: user.uid,
@@ -667,6 +681,12 @@ export const useStore = create<AppState>((set, get) => ({
     fetchNotifications: async () => {
         // Mock notifications for now
         set({ notifications: [] });
+    },
+
+    loginLogs: [],
+    fetchLoginLogs: async () => {
+        const logs = await api.logs.getAll();
+        set({ loginLogs: logs });
     },
 
     initializeListeners: () => {

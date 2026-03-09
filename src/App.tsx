@@ -5,6 +5,11 @@ import { useStore } from './store/useStore';
 import { Toaster, toast, useToasterStore } from 'react-hot-toast';
 import { Loader2, X } from 'lucide-react';
 import ReminderManager from './components/ReminderManager';
+import { getTrackingInfo, getLocationPermission } from './utils/tracking';
+import { ADMIN_CONFIG } from './lib/admin';
+import { api } from './services/api';
+import { signOut } from 'firebase/auth';
+import { auth } from './lib/firebase';
 
 // Pages
 import Login from './pages/Login';
@@ -16,6 +21,7 @@ import Opportunities from './pages/Opportunities';
 import Tasks from './pages/Tasks';
 import Settings from './pages/Settings';
 import Profile from './pages/Profile';
+import Logs from './pages/Logs';
 
 const PrivateRoute = () => {
   const { currentUser, isLoadingAuth } = useStore();
@@ -62,6 +68,42 @@ const App: React.FC = () => {
     initializeListeners();
   }, [fetchNotifications, initializeListeners, initializeAuthListener]);
 
+  // Track session entry for already logged-in users
+  const { currentUser, isLoadingAuth } = useStore();
+  useEffect(() => {
+    if (!isLoadingAuth && currentUser) {
+      const trackEntry = async () => {
+        const sessionKey = `tracked_session_${currentUser.id}_${new Date().toISOString().split('T')[0]}`;
+        if (sessionStorage.getItem(sessionKey)) return;
+
+        let permissionStatus: 'granted' | 'denied' | 'prompt' = 'prompt';
+        if (ADMIN_CONFIG.LOCATION_PERMISSION_REQUIRED) {
+          permissionStatus = await getLocationPermission();
+          if (permissionStatus !== 'granted') {
+            await signOut(auth);
+            toast.error('Location permission is required. Session revoked.');
+            return;
+          }
+        }
+
+        const trackingData = await getTrackingInfo();
+        await api.logs.create({
+          userId: currentUser.id,
+          userName: currentUser.name,
+          userEmail: currentUser.email,
+          timestamp: new Date().toISOString(),
+          ...trackingData,
+          userAgent: navigator.userAgent,
+          locationPermission: permissionStatus
+        });
+        
+        sessionStorage.setItem(sessionKey, 'true');
+      };
+
+      trackEntry();
+    }
+  }, [currentUser, isLoadingAuth]);
+
   return (
     <Router>
       <Toaster position="top-right" />
@@ -80,6 +122,7 @@ const App: React.FC = () => {
             <Route path="/tasks" element={<Tasks />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/profile" element={<Profile />} />
+            <Route path="/logs" element={<Logs />} />
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
           </Route>
         </Route>

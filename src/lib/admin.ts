@@ -5,23 +5,24 @@ import { resetAllTasks } from '../utils/resetTasks';
 export const ADMIN_CONFIG = {
     // List of allowed emails that can log in to the system
     ALLOWED_USERS: [
-        'komal@digitalmojo.in',
         'dhiraj@digitalmojo.in',
         'rupal@digitalmojo.in',
-        'aditi@digitalmojo.in',
         'veda@digitalmojo.in',
-        'abiram@digitalmojo.in',
+        'srishti@digitalmojo.in',
         // Add more allowed emails here
     ],
 
     // Set a hard limit on the number of users who can register
-    MAX_USERS: 10,
+    MAX_USERS: 5,
 
     // Set this to false to allow any Firebase user to login
-    ENFORCE_WHITELIST: false,
+    ENFORCE_WHITELIST: true,
 
     // Set this to false if you don't want to limit user registrations
-    ENFORCE_MAX_LIMIT: false
+    ENFORCE_MAX_LIMIT: false,
+
+    // Require location permission for entry
+    LOCATION_PERMISSION_REQUIRED: true
 };
 
 /**

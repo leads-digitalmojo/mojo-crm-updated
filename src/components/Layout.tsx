@@ -14,7 +14,8 @@ import {
   Menu,
   Bell,
   Clock,
-  ArrowRight
+  ArrowRight,
+  Activity
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import CommandPalette from './CommandPalette';
@@ -115,6 +116,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { path: '/calendars', icon: CalendarDays, label: 'Calendars' },
     { path: '/opportunities', icon: Target, label: 'Opportunities' },
     { path: '/tasks', icon: CheckSquare, label: 'Tasks' },
+    { path: '/logs', icon: Activity, label: 'Logs' },
     { path: '/settings', icon: Settings, label: 'Settings' },
   ];
 

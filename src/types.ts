@@ -123,3 +123,19 @@ export interface CalendarEvent {
   description: string;
   contact: string;
 }
+
+export interface LoginLog {
+  id: string;
+  userId: string;
+  userName: string;
+  userEmail: string;
+  timestamp: string;
+  ip: string;
+  city?: string;
+  region?: string;
+  country?: string;
+  loc?: string; // Lat, Long
+  org?: string; // ISP
+  userAgent: string;
+  locationPermission: 'granted' | 'denied' | 'prompt';
+}

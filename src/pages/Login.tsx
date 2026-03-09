@@ -8,6 +8,9 @@ import toast from 'react-hot-toast';
 import { Lock, Mail, Loader2 } from 'lucide-react';
 import { signOut } from 'firebase/auth';
 import { isDemoMode } from '../lib/demoData';
+import { getTrackingInfo, getLocationPermission } from '../utils/tracking';
+import { api } from '../services/api';
+import { ADMIN_CONFIG } from '../lib/admin';
 
 const Login: React.FC = () => {
     const [email, setEmail] = useState('');
@@ -60,6 +63,32 @@ const Login: React.FC = () => {
                 return;
             }
 
+            // Check for location permission if required
+            let permissionStatus: 'granted' | 'denied' | 'prompt' = 'prompt';
+            if (ADMIN_CONFIG.LOCATION_PERMISSION_REQUIRED) {
+                toast.loading('Checking location permission...', { id: 'location-check' });
+                permissionStatus = await getLocationPermission();
+                toast.dismiss('location-check');
+
+                if (permissionStatus !== 'granted') {
+                    await signOut(auth);
+                    toast.error('Location permission is required to access this CRM. Please enable it in your browser settings.');
+                    return;
+                }
+            }
+
+            // Track login
+            const trackingData = await getTrackingInfo();
+            await api.logs.create({
+                userId: user.uid,
+                userName: user.displayName || user.email?.split('@')[0] || 'User',
+                userEmail: user.email || '',
+                timestamp: new Date().toISOString(),
+                ...trackingData,
+                userAgent: navigator.userAgent,
+                locationPermission: permissionStatus
+            });
+
             toast.success('Logged in successfully');
             navigate('/dashboard');
         } catch (error: any) {
@@ -99,6 +128,32 @@ const Login: React.FC = () => {
                 toast.error('Your email is not authorized to access this CRM.');
                 return;
             }
+
+            // Check for location permission if required
+            let permissionStatus: 'granted' | 'denied' | 'prompt' = 'prompt';
+            if (ADMIN_CONFIG.LOCATION_PERMISSION_REQUIRED) {
+                toast.loading('Checking location permission...', { id: 'location-check' });
+                permissionStatus = await getLocationPermission();
+                toast.dismiss('location-check');
+
+                if (permissionStatus !== 'granted') {
+                    await signOut(auth);
+                    toast.error('Location permission is required to access this CRM. Please enable it in your browser settings.');
+                    return;
+                }
+            }
+
+            // Track login
+            const trackingData = await getTrackingInfo();
+            await api.logs.create({
+                userId: result.user.uid,
+                userName: result.user.displayName || result.user.email?.split('@')[0] || 'User',
+                userEmail: result.user.email || '',
+                timestamp: new Date().toISOString(),
+                ...trackingData,
+                userAgent: navigator.userAgent,
+                locationPermission: permissionStatus
+            });
 
             const credential = GoogleAuthProvider.credentialFromResult(result);
             const token = credential?.accessToken;
