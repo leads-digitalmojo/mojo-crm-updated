@@ -254,9 +254,10 @@ export const mockApi = {
       const totalPipelineValue = filteredOpportunities.reduce((sum, opp) => sum + Number(opp.value || 0), 0);
       const wonOpportunities = filteredOpportunities.filter(opp => opp.status === 'Won' || opp.stage === '10').length;
       const lostOpportunities = filteredOpportunities.filter(opp => opp.status === 'Lost').length;
-      const openOpportunities = filteredOpportunities.filter(opp => opp.status === 'Open').length;
+      const openOpportunities = filteredOpportunities.filter(opp => opp.status === 'Open' || opp.status === 'Not Answered').length;
       const conversionRate = totalOpportunities > 0 ? ((wonOpportunities / totalOpportunities) * 100) : 0;
 
+      // Stage breakdown - filtered by time range so chart responds to duration selector
       const stageBreakdown: Record<string, { count: number; value: number }> = {};
       filteredOpportunities.forEach(opp => {
         const stage = opp.stage || 'Unknown';

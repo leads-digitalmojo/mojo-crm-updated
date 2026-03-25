@@ -45,14 +45,15 @@ const opportunityNames = [
   'Video Production Package', 'UI/UX Design Service', 'Lead Generation Program'
 ];
 
-const stages = ['16', '17', '18', '19', '20', '20.5', '21', '10', '0', '0.5'];
+const stages = ['16', '16.5', '17', '18', '19', '20', '20.5', '21', '10', '0', '0.5', 'not responding'];
 
-const statuses: ('Open' | 'Won' | 'Lost' | 'Abandoned')[] = ['Open', 'Won', 'Lost', 'Open', 'Open'];
+const statuses: ('Open' | 'Won' | 'Lost' | 'Abandoned' | 'Not Answered')[] = ['Open', 'Won', 'Lost', 'Open', 'Open', 'Not Answered'];
 
 const tags = ['Hot Lead', 'VIP', 'Follow Up', 'New Client', 'Renewal', 'Enterprise', 'SMB'];
 
 export const DEFAULT_STAGES = [
   { id: '16', title: '16 - Yet to contact', color: '#f0bc00' },
+  { id: '16.5', title: '16.5 - Not Answering', color: '#eb7311' },
   { id: '21', title: '21 - Cheque Ready', color: '#1ea34f' },
   { id: '20.5', title: '20.5 - Negotiations', color: '#06aed7' },
   { id: '20', title: '20 - Hot', color: '#eb7311' },
@@ -62,6 +63,7 @@ export const DEFAULT_STAGES = [
   { id: '10', title: '10 - Closed', color: '#1ea34f' },
   { id: '0', title: '0 - Junk', color: '#808080' },
   { id: '0.5', title: '0.5 - No Budget', color: '#808080' },
+  { id: 'not responding', title: 'Not Responding', color: '#9f1239' },
 ];
 
 function randomItem<T>(arr: T[]): T {

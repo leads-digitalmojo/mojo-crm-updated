@@ -4,10 +4,11 @@ import { Plus, MoreHorizontal, X, Trash2, LayoutGrid, List as ListIcon, Search, 
 import { useStore } from '../store/useStore';
 import { DndContext, DragEndEvent, useDraggable, useDroppable } from '@dnd-kit/core';
 import { Modal } from '../components/Modal';
-import { Opportunity, Task, Note } from '../types';
+import { Opportunity, Task, Note, OpportunityActivity } from '../types';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 import { canEditTask, canDeleteTask, canToggleTaskCompletion } from '../utils/taskPermissions';
+import { isUserAdmin } from '../lib/admin';
 
 interface DraggableCardProps {
     item: Opportunity;
@@ -53,7 +54,19 @@ const DraggableCard: React.FC<DraggableCardProps> = ({ item, color, onEdit, onDe
                 {/* Header */}
                 <div className="flex justify-between items-start mb-3">
                     <div className="flex flex-col">
-                        <h4 className="font-bold text-gray-900 text-sm line-clamp-2">{item.name}</h4>
+                        <div className="flex items-center gap-2 mb-1">
+                            <h4 className="font-bold text-gray-900 text-sm line-clamp-2">{item.name}</h4>
+                            {item.status && item.status.toLowerCase() !== 'open' && (
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0 ${
+                                    item.status === 'Won' ? 'bg-green-100 text-green-700' :
+                                    item.status === 'Lost' ? 'bg-red-100 text-red-700' :
+                                    item.status === 'Not Answered' ? 'bg-orange-100 text-orange-700' :
+                                    'bg-blue-100 text-blue-700'
+                                }`}>
+                                    {item.status === 'Not Answered' ? 'N/A' : item.status}
+                                </span>
+                            )}
+                        </div>
                         {item.contactId && (
                             <span
                                 onClick={(e) => {
@@ -236,6 +249,7 @@ const Opportunities: React.FC = () => {
     const [editingId, setEditingId] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState('Contact Info');
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [leadFilter, setLeadFilter] = useState<'all' | 'assigned'>('all');
 
     // Form State
     const [formData, setFormData] = useState({
@@ -297,11 +311,15 @@ const Opportunities: React.FC = () => {
         fetchContacts();
         fetchStageCounts();
         fetchAppointments();
-        // Fetch initial opportunities for each stage (for board view)
+    }, [fetchOpportunities, fetchContacts, fetchStageCounts, fetchAppointments, currentUser]);
+
+    // Separate effect: fetch per-stage data whenever stages load/change from Firebase
+    useEffect(() => {
+        if (!currentUser || stages.length === 0) return;
         stages.forEach(stage => {
             fetchOpportunitiesByStage(stage.id);
         });
-    }, [fetchOpportunities, fetchContacts, fetchStageCounts, fetchAppointments, fetchOpportunitiesByStage, currentUser]);
+    }, [stages, currentUser, fetchOpportunitiesByStage]);
 
     useEffect(() => {
         setTempStages(stages);
@@ -475,7 +493,12 @@ const Opportunities: React.FC = () => {
 
             const matchesMonth = filters.selectedMonth ? (opp.createdAt && opp.createdAt.startsWith(filters.selectedMonth)) : true;
 
-            return matchesSearch && matchesStage && matchesStatus && matchesType && matchesMonth;
+            // Assigned Leads Filter
+            const matchesLeadFilter = leadFilter === 'assigned'
+                ? (opp.followUpAssignee === currentUser?.id || opp.followUpAssignee === currentUser?.email)
+                : true;
+
+            return matchesSearch && matchesStage && matchesStatus && matchesType && matchesMonth && matchesLeadFilter;
         }).sort(sortOpps);
     }, [opportunities, searchTerm, filters.stage, filters.status, filters.opportunityType, filters.selectedMonth, sortOrder, sortBy, stages, viewMode]);
 
@@ -1089,6 +1112,22 @@ const Opportunities: React.FC = () => {
 
                 {/* Filters Bar */}
                 <div className="flex flex-wrap md:flex-nowrap gap-2 md:gap-4 items-center relative">
+                    {/* Lead filter tabs */}
+                    <div className="flex bg-white border border-gray-300 rounded-lg p-1 shrink-0 shadow-sm">
+                        <button
+                            onClick={() => setLeadFilter('all')}
+                            className={`px-3 py-1.5 rounded-md text-xs md:text-sm font-bold transition-all ${leadFilter === 'all' ? 'bg-brand-blue text-white shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                        >
+                            All Leads
+                        </button>
+                        <button
+                            onClick={() => setLeadFilter('assigned')}
+                            className={`px-3 py-1.5 rounded-md text-xs md:text-sm font-bold transition-all ${leadFilter === 'assigned' ? 'bg-brand-blue text-white shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                        >
+                            Assigned to Me
+                        </button>
+                    </div>
+
                     <div className="relative flex-1 min-w-[200px] md:max-w-md">
                         <Search className="absolute left-3 top-2.5 text-gray-400 h-5 w-5" />
                         <input
@@ -1114,6 +1153,29 @@ const Opportunities: React.FC = () => {
                         >
                             <ListIcon size={18} className="md:w-5 md:h-5" />
                         </button>
+                    </div>
+
+                    {/* Quick Status Filters */}
+                    <div className="flex bg-white border border-gray-300 rounded-lg p-1 shrink-0 shadow-sm overflow-x-auto no-scrollbar">
+                        {[
+                            { label: 'All', value: '' },
+                            { label: 'Open', value: 'Open' },
+                            { label: 'Won', value: 'Won' },
+                            { label: 'Lost', value: 'Lost' },
+                            { label: 'Not Answered', value: 'Not Answered' }
+                        ].map((s) => (
+                            <button
+                                key={s.label}
+                                onClick={() => setFilters(prev => ({ ...prev, status: s.value }))}
+                                className={`px-3 py-1.5 rounded text-xs font-bold whitespace-nowrap transition-colors ${
+                                    filters.status === s.value 
+                                        ? 'bg-brand-blue text-white' 
+                                        : 'text-gray-500 hover:bg-gray-50'
+                                }`}
+                            >
+                                {s.label}
+                            </button>
+                        ))}
                     </div>
                     <div className="relative" ref={sortRef}>
                         <button
@@ -1233,6 +1295,7 @@ const Opportunities: React.FC = () => {
                                         <option value="Won">Won</option>
                                         <option value="Lost">Lost</option>
                                         <option value="Abandoned">Abandoned</option>
+                                        <option value="Not Answered">Not Answered</option>
                                     </select>
                                 </div>
                                 <div>
@@ -1409,7 +1472,8 @@ const Opportunities: React.FC = () => {
                                                 <span className={`px-2 py-1 text-xs font-medium rounded-full border ${opp.status === 'Won' ? 'bg-green-50 text-green-700 border-green-100' :
                                                     opp.status === 'Lost' ? 'bg-red-50 text-red-700 border-red-100' :
                                                         opp.status === 'Abandoned' ? 'bg-gray-50 text-gray-700 border-gray-100' :
-                                                            'bg-blue-50 text-blue-700 border-blue-100'
+                                                            opp.status === 'Not Answered' ? 'bg-orange-50 text-orange-700 border-orange-100' :
+                                                                'bg-blue-50 text-blue-700 border-blue-100'
                                                     }`}>
                                                     {opp.status}
                                                 </span>
@@ -1463,7 +1527,9 @@ const Opportunities: React.FC = () => {
                                             </div>
                                             {opp.status && (
                                                 <div className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${opp.status === 'Won' ? 'bg-green-100 text-green-700' :
-                                                    opp.status === 'Lost' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'
+                                                    opp.status === 'Lost' ? 'bg-red-100 text-red-700' :
+                                                    opp.status === 'Not Answered' ? 'bg-orange-100 text-orange-700' :
+                                                    'bg-blue-100 text-blue-700'
                                                     }`}>
                                                     {opp.status}
                                                 </div>
@@ -1518,13 +1584,17 @@ const Opportunities: React.FC = () => {
                             <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
                                 {/* Sidebar Tabs / Top Tabs on Mobile */}
                                 <div className="w-full md:w-64 bg-gray-50 border-b md:border-b-0 md:border-r border-gray-200 flex md:flex-col overflow-x-auto md:overflow-y-auto shrink-0 no-scrollbar">
-                                    {[
-                                        { label: 'Details', id: 'details' },
-                                        { label: 'Booking', id: 'book-update-appointment' },
-                                        { label: 'Tasks', id: 'tasks' },
-                                        { label: 'Notes', id: 'notes' }
-                                    ].map((tab) => {
-                                        return (
+                                    {(() => {
+                                        const tabs = [
+                                            { label: 'Details', id: 'details' },
+                                            { label: 'Booking', id: 'book-update-appointment' },
+                                            { label: 'Tasks', id: 'tasks' },
+                                            { label: 'Notes', id: 'notes' }
+                                        ];
+                                        if (isUserAdmin(currentUser?.email)) {
+                                            tabs.push({ label: 'Leads Movement', id: 'activity' });
+                                        }
+                                        return tabs.map((tab) => (
                                             <button
                                                 key={tab.id}
                                                 onClick={() => setActiveTab(tab.id)}
@@ -1535,8 +1605,8 @@ const Opportunities: React.FC = () => {
                                             >
                                                 {tab.label}
                                             </button>
-                                        );
-                                    })}
+                                        ));
+                                    })()}
                                 </div>
 
                                 {/* Main Content Area */}
@@ -1678,6 +1748,7 @@ const Opportunities: React.FC = () => {
                                                                 <option value="Won">Won</option>
                                                                 <option value="Lost">Lost</option>
                                                                 <option value="Abandoned">Abandoned</option>
+                                                                <option value="Not Answered">Not Answered</option>
                                                             </select>
                                                         </div>
 
@@ -1762,37 +1833,100 @@ const Opportunities: React.FC = () => {
                                                         <hr className="border-gray-100 my-6" />
 
                                                         {/* Follow up Section */}
-                                                        <div>
-                                                            <label className="block mb-2 text-sm font-medium text-gray-700">Follow up Date</label>
-                                                            <div className="relative">
-                                                                <Calendar size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                                                                <input
-                                                                    type="date"
-                                                                    placeholder="dd/mm/yyyy"
-                                                                    value={formData.followUpDate}
-                                                                    onChange={e => setFormData({ ...formData, followUpDate: e.target.value })}
-                                                                    onClick={(e) => (e.target as any).showPicker?.()}
-                                                                    className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue cursor-pointer"
-                                                                />
+                                                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 mt-4">
+                                                        <div className="flex items-center gap-2 mb-4 border-b border-gray-200 pb-2">
+                                                            <div className="p-1.5 bg-brand-blue/10 rounded-md text-brand-blue">
+                                                                <User size={16} />
+                                                            </div>
+                                                            <h3 className="text-sm font-bold text-gray-900">Follow-up Management</h3>
+                                                            <div className="ml-auto text-[10px] font-medium text-gray-500 bg-white px-2 py-1 rounded border border-gray-200">
+                                                                Current User: <span className="text-brand-blue font-bold">{currentUser?.name}</span>
                                                             </div>
                                                         </div>
+                                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                                            <div>
+                                                                <label className="block mb-2 text-sm font-medium text-gray-700">Follow up Date</label>
+                                                                <div className="relative">
+                                                                    <Calendar size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                                                                    <input
+                                                                        type="date"
+                                                                        placeholder="dd/mm/yyyy"
+                                                                        value={formData.followUpDate}
+                                                                        onChange={e => setFormData({ ...formData, followUpDate: e.target.value })}
+                                                                        onClick={(e) => (e.target as any).showPicker?.()}
+                                                                        className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue cursor-pointer"
+                                                                    />
+                                                                </div>
+                                                            </div>
 
-                                                        <div>
-                                                            <label className="block mb-2 text-sm font-medium text-gray-700">Follow up Assignee</label>
-                                                            <select
-                                                                value={formData.followUpAssignee}
-                                                                onChange={e => setFormData({ ...formData, followUpAssignee: e.target.value })}
-                                                                className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
-                                                            >
-                                                                <option value="">Select Assignee</option>
-                                                                {TEAM_MEMBERS.map(member => (
-                                                                    <option key={member.id} value={member.id}>{member.name}</option>
-                                                                ))}
-                                                            </select>
+                                                            <div>
+                                                                <label className="block mb-2 text-sm font-medium text-gray-700">Follow up Assignee</label>
+                                                                <select
+                                                                    value={formData.followUpAssignee}
+                                                                    onChange={e => setFormData({ ...formData, followUpAssignee: e.target.value })}
+                                                                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
+                                                                >
+                                                                    <option value="">Select Assignee</option>
+                                                                    {TEAM_MEMBERS.map(member => (
+                                                                        <option key={member.id} value={member.id}>{member.name}</option>
+                                                                    ))}
+                                                                </select>
+                                                            </div>
                                                         </div>
+                                                    </div>
                                                     </div>
                                                 </section>
                                             </>
+                                        )}
+
+                                        {/* ACTIVITY TAB (Leads Movement) */}
+                                        {activeTab === 'activity' && (
+                                            <section>
+                                                <h3 className="text-lg font-bold text-gray-900 mb-6 flex items-center gap-2">
+                                                    Leads Movement <Clock size={18} className="text-gray-400" />
+                                                </h3>
+                                                <div className="relative border-l-2 border-gray-100 ml-3 pl-8 space-y-8">
+                                                    {(() => {
+                                                        const currentOpp = opportunities.find(o => o.id === editingId);
+                                                        const activities = currentOpp?.activities || [];
+                                                        
+                                                        if (activities.length === 0) {
+                                                            return <p className="text-sm text-gray-500 italic">No activity recorded yet.</p>;
+                                                        }
+
+                                                        return activities.map((activity, idx) => (
+                                                            <div key={activity.id} className="relative">
+                                                                {/* Timeline Dot */}
+                                                                <div className="absolute -left-[41px] top-1 w-4 h-4 rounded-full border-2 border-white bg-brand-blue shadow-sm z-10" />
+                                                                
+                                                                <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                                                                    <div className="flex justify-between items-start mb-2">
+                                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                                                                            activity.type === 'stage_change' ? 'bg-purple-100 text-purple-700' :
+                                                                            activity.type === 'status_change' ? 'bg-green-100 text-green-700' :
+                                                                            activity.type === 'note_added' ? 'bg-orange-100 text-orange-700' :
+                                                                            activity.type === 'task_added' ? 'bg-blue-100 text-blue-700' :
+                                                                            'bg-gray-200 text-gray-700'
+                                                                        }`}>
+                                                                            {activity.type.replace('_', ' ')}
+                                                                        </span>
+                                                                        <span className="text-[10px] text-gray-500 font-medium">
+                                                                            {format(new Date(activity.timestamp), 'MMM d, yyyy • h:mm a')}
+                                                                        </span>
+                                                                    </div>
+                                                                    <p className="text-sm text-gray-800 font-medium">{activity.description}</p>
+                                                                    <div className="mt-3 flex items-center gap-2">
+                                                                        <div className="w-5 h-5 rounded-full bg-brand-blue/10 flex items-center justify-center text-[10px] font-bold text-brand-blue">
+                                                                            {activity.userName?.charAt(0) || 'U'}
+                                                                        </div>
+                                                                        <span className="text-xs text-gray-500">By {activity.userName}</span>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        ));
+                                                    })()}
+                                                </div>
+                                            </section>
                                         )}
 
                                         {/* APPOINTMENT TAB */}

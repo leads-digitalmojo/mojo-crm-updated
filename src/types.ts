@@ -38,12 +38,23 @@ export interface Note {
   createdAt: string;
 }
 
+export interface OpportunityActivity {
+  id: string;
+  type: 'stage_change' | 'status_change' | 'note_added' | 'task_added' | 'task_completed' | 'assignment_change' | 'followup_update';
+  description: string;
+  timestamp: string;
+  userId: string;
+  userName: string;
+  oldValue?: string;
+  newValue?: string;
+}
+
 export interface Opportunity {
   id: string;
   name: string;
   value: number;
   stage: string;
-  status: 'Open' | 'Won' | 'Lost' | 'Abandoned';
+  status: 'Open' | 'Won' | 'Lost' | 'Abandoned' | 'Not Answered';
   owner?: string;
   tags: string[];
   contactId?: string;
@@ -66,6 +77,7 @@ export interface Opportunity {
   followUpRead?: boolean;
   opportunityType?: 'Real Estate' | 'Others';
   followUpAssignee?: string;
+  activities?: OpportunityActivity[];
 }
 
 export interface PipelineColumn {

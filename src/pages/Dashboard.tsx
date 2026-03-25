@@ -13,11 +13,12 @@ import {
   Pie,
   Cell
 } from 'recharts';
-import { TrendingUp, IndianRupee, Target, CheckCircle, Loader2 } from 'lucide-react';
+import { TrendingUp, IndianRupee, Target, CheckCircle, Loader2, Users, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { useStore } from '../store/useStore';
+import { isUserAdmin } from '../lib/admin';
 
 const Dashboard: React.FC = () => {
-  const { dashboardStats, fetchDashboardStats, stages } = useStore();
+  const { dashboardStats, fetchDashboardStats, stages, currentUser } = useStore();
   const [timeRange, setTimeRange] = React.useState('30'); // '30', '7', '1'
 
   // Fetch dashboard stats when time range changes
@@ -38,7 +39,7 @@ const Dashboard: React.FC = () => {
   }
 
   // Funnel Data: Sort stages logically (Start -> End)
-  const stageOrder = ['16', '17', '18', '19', '20', '20.5', '21', '10'];
+  const stageOrder = ['16', '16.5', 'not responding', '21', '20.5', '20', '19', '18', '17', '10', '0', '0.5'];
 
   const funnelData = stageOrder.map(id => {
     const stage = stages.find(s => s.id === id);
@@ -246,6 +247,108 @@ const Dashboard: React.FC = () => {
               )}
             </div>
           </div>
+
+          {/* Admin Performance Overview */}
+          {isUserAdmin(currentUser?.email) && (
+            <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">Individual Performance</h3>
+                  <p className="text-sm text-gray-500">Lead conversion metrics per team member.</p>
+                </div>
+                <Users className="text-gray-400" size={24} />
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-gray-100">
+                      <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Member</th>
+                      <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center">Total Leads</th>
+                      <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center border-l border-gray-50">Won</th>
+                      <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center">Lost</th>
+                      <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center border-l border-gray-50 text-brand-blue">Conv. Rate</th>
+                      <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-right border-l border-gray-50">Value</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {(() => {
+                      const TEAM_MEMBERS = [
+                        { name: 'Komal', email: 'komal@digitalmojo.in', id: 'OwGcGoDXKdPVAMBNTyrY8nDqpmm2' },
+                        { name: 'Dhiraj', email: 'dhiraj@digitalmojo.in', id: '58Ba96qczERiK7DzBbMkpoko7Vx1' },
+                        { name: 'Rupal', email: 'rupal@digitalmojo.in', id: 'UNUwlgtVDUc6c9uQVMvBiYjmBYB2' },
+                        { name: 'Veda', email: 'veda@digitalmojo.in', id: '6l7loPF90teRjJxy61ABWH5GUvX2' }
+                      ];
+
+                      const stats: Record<string, { name: string, total: number, won: number, lost: number, value: number }> = {};
+                      
+                      // Initialize stats for known team members
+                      TEAM_MEMBERS.forEach(m => {
+                        stats[m.email] = { name: m.name, total: 0, won: 0, lost: 0, value: 0 };
+                      });
+
+                      (dashboardStats?.allOpportunities || []).forEach(opp => {
+                        const assignee = opp.followUpAssignee || 'Unassigned';
+                        // Check if assignee matches an ID or Email
+                        const member = TEAM_MEMBERS.find(m => m.id === assignee || m.email === assignee);
+                        const key = member ? member.email : 'Unassigned';
+                        
+                        if (!stats[key]) {
+                          stats[key] = { name: key, total: 0, won: 0, lost: 0, value: 0 };
+                        }
+                        
+                        stats[key].total++;
+                        if (opp.status === 'Won' || opp.stage === '10') stats[key].won++;
+                        if (opp.status === 'Lost') stats[key].lost++;
+                        stats[key].value += Number(opp.value || 0);
+                      });
+
+                      return Object.values(stats)
+                        .sort((a, b) => b.total - a.total)
+                        .map(user => {
+                          const convRate = user.total > 0 ? ((user.won / user.total) * 100).toFixed(1) : '0';
+                          return (
+                            <tr key={user.name} className="hover:bg-gray-50 transition-colors">
+                              <td className="py-4 px-4">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-8 h-8 rounded-full bg-brand-blue/10 flex items-center justify-center text-xs font-bold text-brand-blue border border-brand-blue/20">
+                                    {user.name.charAt(0)}
+                                  </div>
+                                  <span className="text-sm font-bold text-gray-900">{user.name}</span>
+                                </div>
+                              </td>
+                              <td className="py-4 px-4 text-center">
+                                <span className="text-sm font-medium text-gray-700">{user.total}</span>
+                              </td>
+                              <td className="py-4 px-4 text-center border-l border-gray-50">
+                                <span className="text-sm font-bold text-green-600">{user.won}</span>
+                              </td>
+                              <td className="py-4 px-4 text-center">
+                                <span className="text-sm font-bold text-red-500">{user.lost}</span>
+                              </td>
+                              <td className="py-4 px-4 text-center border-l border-gray-50">
+                                <div className="flex flex-col items-center">
+                                  <span className="text-sm font-bold text-brand-blue">{convRate}%</span>
+                                  <div className="w-16 h-1 bg-gray-100 rounded-full mt-1 overflow-hidden">
+                                    <div 
+                                      className="h-full bg-brand-blue" 
+                                      style={{ width: `${Math.min(100, parseFloat(convRate))}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="py-4 px-4 text-right font-bold text-gray-900 border-l border-gray-50">
+                                ₹{user.value.toLocaleString()}
+                              </td>
+                            </tr>
+                          );
+                        });
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

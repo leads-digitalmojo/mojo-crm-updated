@@ -75,6 +75,7 @@ interface AppState {
         stageBreakdown: Record<string, { count: number; value: number }>;
         pipelineTrend: { name: string; value: number }[];
         taskStats: { completed: number; pending: number; total: number };
+        allOpportunities: Opportunity[];
     } | null;
     fetchDashboardStats: (daysBack: number) => Promise<void>;
 
@@ -275,7 +276,8 @@ export const useStore = create<AppState>((set, get) => ({
                     conversionRate: stats.conversionRate,
                     stageBreakdown: stats.stageBreakdown,
                     pipelineTrend: stats.pipelineTrend,
-                    taskStats: stats.taskStats
+                    taskStats: stats.taskStats,
+                    allOpportunities: stats.allOpportunities || []
                 }
             });
         } catch (error) {
@@ -479,7 +481,19 @@ export const useStore = create<AppState>((set, get) => ({
         }
     },
     addOpportunity: async (opp) => {
-        const newOpp = await api.opportunities.create(opp);
+        const currentUser = get().currentUser;
+        const oppData = {
+            ...opp,
+            activities: currentUser ? [{
+                id: Date.now().toString() + '_create',
+                type: 'status_change' as const,
+                description: 'Opportunity created',
+                timestamp: new Date().toISOString(),
+                userId: currentUser.id,
+                userName: currentUser.name
+            }] : []
+        };
+        const newOpp = await api.opportunities.create(oppData);
         set((state) => {
             // Check if opportunity already exists in state to prevent duplicates
             if (state.opportunities.some(o => o.id === newOpp.id)) {
@@ -554,6 +568,97 @@ export const useStore = create<AppState>((set, get) => ({
         if (opp.followUpDate !== undefined) {
             opp.followUpRead = false;
         }
+
+        // --- Lead Movement Tracking ---
+        const existingOpp = get().opportunities.find(o => o.id === id);
+        const currentUser = get().currentUser;
+        if (existingOpp && currentUser) {
+            const newActivities: any[] = [...(existingOpp.activities || [])];
+            let activityAdded = false;
+
+            // Track Stage Change
+            if (opp.stage !== undefined && opp.stage !== existingOpp.stage) {
+                const oldStageName = get().stages.find(s => s.id === existingOpp.stage)?.title || existingOpp.stage;
+                const newStageName = get().stages.find(s => s.id === opp.stage)?.title || opp.stage;
+                newActivities.push({
+                    id: Date.now().toString() + '_stage',
+                    type: 'stage_change',
+                    description: `Stage changed from "${oldStageName}" to "${newStageName}"`,
+                    timestamp: new Date().toISOString(),
+                    userId: currentUser.id,
+                    userName: currentUser.name,
+                    oldValue: existingOpp.stage,
+                    newValue: opp.stage
+                });
+                activityAdded = true;
+            }
+
+            // Track Status Change
+            if (opp.status !== undefined && opp.status !== existingOpp.status) {
+                newActivities.push({
+                    id: Date.now().toString() + '_status',
+                    type: 'status_change',
+                    description: `Status changed from "${existingOpp.status}" to "${opp.status}"`,
+                    timestamp: new Date().toISOString(),
+                    userId: currentUser.id,
+                    userName: currentUser.name,
+                    oldValue: existingOpp.status,
+                    newValue: opp.status
+                });
+                activityAdded = true;
+            }
+
+            // Track Follow-up update
+            if (opp.followUpDate !== undefined && opp.followUpDate !== existingOpp.followUpDate) {
+                newActivities.push({
+                    id: Date.now().toString() + '_followup',
+                    type: 'followup_update',
+                    description: `Follow-up date set to ${opp.followUpDate}`,
+                    timestamp: new Date().toISOString(),
+                    userId: currentUser.id,
+                    userName: currentUser.name,
+                    newValue: opp.followUpDate
+                });
+                activityAdded = true;
+            }
+
+            // Track Task Addition
+            if (opp.tasks !== undefined && opp.tasks.length > (existingOpp.tasks?.length || 0)) {
+                const newTasksAdded = opp.tasks.filter(nt => !existingOpp.tasks?.some(et => et.id === nt.id));
+                newTasksAdded.forEach(nt => {
+                    newActivities.push({
+                        id: Date.now().toString() + '_task_' + nt.id,
+                        type: 'task_added',
+                        description: `Task added: "${nt.title}"`,
+                        timestamp: new Date().toISOString(),
+                        userId: currentUser.id,
+                        userName: currentUser.name
+                    });
+                });
+                activityAdded = true;
+            }
+
+            // Track Note Addition
+            if (opp.notes !== undefined && opp.notes.length > (existingOpp.notes?.length || 0)) {
+                const newNotesAdded = opp.notes.filter(nn => !existingOpp.notes?.some(en => en.id === nn.id));
+                newNotesAdded.forEach(nn => {
+                    newActivities.push({
+                        id: Date.now().toString() + '_note_' + nn.id,
+                        type: 'note_added',
+                        description: `Note added: "${nn.content.substring(0, 30)}${nn.content.length > 30 ? '...' : ''}"`,
+                        timestamp: new Date().toISOString(),
+                        userId: currentUser.id,
+                        userName: currentUser.name
+                    });
+                });
+                activityAdded = true;
+            }
+
+            if (activityAdded) {
+                opp.activities = newActivities.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+            }
+        }
+        // --- End Tracking ---
 
         await api.opportunities.update(id, opp);
         set((state) => ({
@@ -703,7 +808,21 @@ export const useStore = create<AppState>((set, get) => ({
         // Fetch initial stages once to avoid race conditions in pages
         api.pipelines.get().then(data => {
             if (data && data.length > 0) {
+                // Auto-migrate: inject "Not Answering" stage (16.5) if missing
+                const hasNotAnswering = data.some((s: any) => s.id === '16.5');
+                if (!hasNotAnswering) {
+                    const yetToContactIdx = data.findIndex((s: any) => s.id === '16');
+                    const insertAt = yetToContactIdx >= 0 ? yetToContactIdx + 1 : 1;
+                    data.splice(insertAt, 0, { id: '16.5', title: '16.5 - Not Answering', color: '#eb7311' });
+                    // Persist back to Firebase
+                    api.pipelines.update(data).catch(console.error);
+                }
                 set({ stages: data });
+            } else {
+                // No pipeline in DB yet — use DEFAULT_STAGES and seed it
+                const { DEFAULT_STAGES } = require('../lib/demoData');
+                set({ stages: DEFAULT_STAGES });
+                api.pipelines.update(DEFAULT_STAGES).catch(console.error);
             }
         });
 

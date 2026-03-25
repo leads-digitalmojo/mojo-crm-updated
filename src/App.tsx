@@ -6,7 +6,7 @@ import { Toaster, toast, useToasterStore } from 'react-hot-toast';
 import { Loader2, X } from 'lucide-react';
 import ReminderManager from './components/ReminderManager';
 import { getTrackingInfo, getLocationPermission } from './utils/tracking';
-import { ADMIN_CONFIG } from './lib/admin';
+import { ADMIN_CONFIG, isUserAdmin } from './lib/admin';
 import { api } from './services/api';
 import { signOut } from 'firebase/auth';
 import { auth } from './lib/firebase';
@@ -122,7 +122,9 @@ const App: React.FC = () => {
             <Route path="/tasks" element={<Tasks />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/profile" element={<Profile />} />
-            <Route path="/logs" element={<Logs />} />
+            <Route path="/logs" element={
+              isUserAdmin(currentUser?.email) ? <Logs /> : <Navigate to="/dashboard" replace />
+            } />
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
           </Route>
         </Route>

@@ -313,7 +313,7 @@ const firebaseApi = {
 
                 // Filter by time range - strictly filter by createdAt
                 filteredOpportunities = allOpportunities.filter(opp => {
-                    // Exclude opportunities without createdAt for accurate filtering
+                    // Exclude opportunities without createdAt for accurate filtering in specific time ranges
                     if (!opp.createdAt) return false;
 
                     try {
@@ -326,8 +326,8 @@ const firebaseApi = {
                     }
                 });
             } else {
-                // Return ALL opportunities (just filter out invalid data)
-                filteredOpportunities = allOpportunities.filter(opp => !!opp.createdAt);
+                // Return ALL opportunities for "Total" view (don't filter by date)
+                filteredOpportunities = allOpportunities;
             }
 
             // Calculate stats
@@ -335,10 +335,10 @@ const firebaseApi = {
             const totalPipelineValue = filteredOpportunities.reduce((sum, opp) => sum + Number(opp.value || 0), 0);
             const wonOpportunities = filteredOpportunities.filter(opp => opp.status === 'Won' || opp.stage === '10').length;
             const lostOpportunities = filteredOpportunities.filter(opp => opp.status === 'Lost').length;
-            const openOpportunities = filteredOpportunities.filter(opp => opp.status === 'Open').length;
+            const openOpportunities = filteredOpportunities.filter(opp => opp.status === 'Open' || opp.status === 'Not Answered').length;
             const conversionRate = totalOpportunities > 0 ? ((wonOpportunities / totalOpportunities) * 100) : 0;
 
-            // Stage breakdown
+            // Stage breakdown - filtered by time range so chart responds to duration selector
             const stageBreakdown: Record<string, { count: number; value: number }> = {};
             filteredOpportunities.forEach(opp => {
                 const stage = opp.stage || 'Unknown';

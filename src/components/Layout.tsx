@@ -23,6 +23,7 @@ import DemoBanner from './DemoBanner';
 import { api } from '../services/api';
 import { Opportunity } from '../types';
 import toast from 'react-hot-toast';
+import { isUserAdmin } from '../lib/admin';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -96,7 +97,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       const isAssignedToMe = opp.followUpAssignee &&
         (opp.followUpAssignee === currentUser?.id ||
           opp.followUpAssignee === currentUser?.email);
-      return opp.status === 'Open' && isAssignedToMe;
+      return (opp.status === 'Open' || opp.status === 'Not Answered') && isAssignedToMe;
     }).map(opp => ({
       id: opp.id,
       type: 'follow-up' as const,
@@ -111,14 +112,23 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     navigate('/login');
   };
 
-  const navItems = [
-    { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-    { path: '/calendars', icon: CalendarDays, label: 'Calendars' },
-    { path: '/opportunities', icon: Target, label: 'Opportunities' },
-    { path: '/tasks', icon: CheckSquare, label: 'Tasks' },
-    { path: '/logs', icon: Activity, label: 'Logs' },
-    { path: '/settings', icon: Settings, label: 'Settings' },
-  ];
+  const navItems = useMemo(() => {
+    const items = [
+      { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+      { path: '/calendars', icon: CalendarDays, label: 'Calendars' },
+      { path: '/opportunities', icon: Target, label: 'Opportunities' },
+      { path: '/tasks', icon: CheckSquare, label: 'Tasks' },
+      { path: '/settings', icon: Settings, label: 'Settings' },
+    ];
+
+    // Only add Logs for admins
+    if (isUserAdmin(currentUser?.email)) {
+      // Insert before Settings
+      items.splice(items.length - 1, 0, { path: '/logs', icon: Activity, label: 'Logs' });
+    }
+
+    return items;
+  }, [currentUser]);
 
   return (
     <div className="flex h-screen w-full bg-background-light dark:bg-background-dark overflow-hidden transition-colors duration-200">

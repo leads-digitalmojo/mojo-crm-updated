@@ -9,11 +9,13 @@ export const ADMIN_CONFIG = {
         'rupal@digitalmojo.in',
         'veda@digitalmojo.in',
         'srishti@digitalmojo.in',
+        'komal@digitalmojo.in',
+        'aditya.digitalmojo@gmail.com'
         // Add more allowed emails here
     ],
 
     // Set a hard limit on the number of users who can register
-    MAX_USERS: 5,
+    MAX_USERS: 6,
 
     // Set this to false to allow any Firebase user to login
     ENFORCE_WHITELIST: true,
@@ -22,7 +24,24 @@ export const ADMIN_CONFIG = {
     ENFORCE_MAX_LIMIT: false,
 
     // Require location permission for entry
-    LOCATION_PERMISSION_REQUIRED: true
+    LOCATION_PERMISSION_REQUIRED: true,
+
+    // Administration Emails
+    ADMIN_EMAILS: [
+        'dhiraj@digitalmojo.in',
+        'srishti@digitalmojo.in',
+        'aditya.digitalmojo@gmail.com' // Included for testing
+    ]
+};
+
+/**
+ * Checks if a user is an admin based on their email
+ * @param email The email to check
+ * @returns boolean indicating if the user is an admin
+ */
+export const isUserAdmin = (email: string | null | undefined): boolean => {
+    if (!email) return false;
+    return ADMIN_CONFIG.ADMIN_EMAILS.includes(email.toLowerCase());
 };
 
 /**
