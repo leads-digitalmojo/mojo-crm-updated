@@ -3,15 +3,14 @@ import { collection, getDocs, query, limit } from 'firebase/firestore';
 import { resetAllTasks } from '../utils/resetTasks';
 
 export const ADMIN_CONFIG = {
-    // List of allowed emails that can log in to the system
-    ALLOWED_USERS: [
-        'dhiraj@digitalmojo.in',
-        'rupal@digitalmojo.in',
-        'veda@digitalmojo.in',
-        'srishti@digitalmojo.in',
-        'komal@digitalmojo.in',
-        'aditya.digitalmojo@gmail.com'
-        // Add more allowed emails here
+    // List of allowed users with their emails and phone numbers (for Wati integration)
+    USERS: [
+        { name: 'Dhiraj', email: 'dhiraj@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: true },
+        { name: 'Srishti', email: 'srishti@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: true },
+        { name: 'Rupal', email: 'rupal@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: false },
+        { name: 'Veda', email: 'veda@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: false },
+        { name: 'Komal', email: 'komal@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: false },
+        { name: 'Aditya', email: 'aditya.digitalmojo@gmail.com', phone: '91xxxxxxxxxx', isAdmin: true }
     ],
 
     // Set a hard limit on the number of users who can register
@@ -25,14 +24,12 @@ export const ADMIN_CONFIG = {
 
     // Require location permission for entry
     LOCATION_PERMISSION_REQUIRED: true,
-
-    // Administration Emails
-    ADMIN_EMAILS: [
-        'dhiraj@digitalmojo.in',
-        'srishti@digitalmojo.in',
-        'aditya.digitalmojo@gmail.com' // Included for testing
-    ]
 };
+
+// Derived lists for compatibility
+export const ALLOWED_USERS = ADMIN_CONFIG.USERS.map(u => u.email.toLowerCase());
+export const ADMIN_EMAILS = ADMIN_CONFIG.USERS.filter(u => u.isAdmin).map(u => u.email.toLowerCase());
+export const AUTHORIZED_PHONES = ADMIN_CONFIG.USERS.map(u => u.phone.replace(/\D/g, ''));
 
 /**
  * Checks if a user is an admin based on their email
@@ -41,7 +38,7 @@ export const ADMIN_CONFIG = {
  */
 export const isUserAdmin = (email: string | null | undefined): boolean => {
     if (!email) return false;
-    return ADMIN_CONFIG.ADMIN_EMAILS.includes(email.toLowerCase());
+    return ADMIN_EMAILS.includes(email.toLowerCase());
 };
 
 /**
@@ -54,7 +51,7 @@ export const isUserAllowed = (email: string | null): boolean => {
 
     // If whitelist is enforced, check if email is in the list
     if (ADMIN_CONFIG.ENFORCE_WHITELIST) {
-        return ADMIN_CONFIG.ALLOWED_USERS.includes(email.toLowerCase());
+        return ALLOWED_USERS.includes(email.toLowerCase());
     }
 
     return true;
@@ -78,6 +75,16 @@ export const isRegistrationLimitReached = async (): Promise<boolean> => {
         // If check fails, default to allowing registration but logging the error
         return false;
     }
+};
+
+/**
+ * Checks if a phone number is authorized (belongs to a registered user)
+ * @param phone The phone number to check (cleaned of non-digits)
+ * @returns boolean indicating if the phone is authorized
+ */
+export const isUserPhoneAuthorized = (phone: string): boolean => {
+    const cleanPhone = phone.replace(/\D/g, '');
+    return AUTHORIZED_PHONES.includes(cleanPhone);
 };
 
 // Export the reset tasks utility
