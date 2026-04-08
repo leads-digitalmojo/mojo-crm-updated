@@ -10,7 +10,7 @@ export const ADMIN_CONFIG = {
         { name: 'Rupal', email: 'rupal@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: false },
         { name: 'Veda', email: 'veda@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: false },
         { name: 'Komal', email: 'komal@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: false },
-        { name: 'Aditya', email: 'aditya.digitalmojo@gmail.com', phone: '91xxxxxxxxxx', isAdmin: true }
+        { name: 'Aditya', email: 'aditya.digitalmojo@gmail.com', phone: '918017699390', isAdmin: false }
     ],
 
     // Set a hard limit on the number of users who can register

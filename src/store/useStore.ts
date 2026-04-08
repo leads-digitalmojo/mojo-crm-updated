@@ -844,6 +844,22 @@ export const useStore = create<AppState>((set, get) => ({
             }
         });
 
+        // ✅ Real-time opportunities listener — ensures WhatsApp leads appear instantly
+        const unsubOpps = api.opportunities.subscribe((data) => {
+            set((state) => {
+                // Merge real-time data with existing optimistic updates
+                const existingMap = new Map(state.opportunities.map(o => [o.id, o]));
+                data.forEach(opp => existingMap.set(opp.id, opp));
+                return { opportunities: Array.from(existingMap.values()) };
+            });
+        });
+
         // Store unsubscribe functions if needed for cleanup
+        return () => {
+            unsubscribeApps();
+            unsubConvs();
+            unsubStages();
+            unsubOpps();
+        };
     }
 }));

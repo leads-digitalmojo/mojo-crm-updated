@@ -1,14 +1,35 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Papa from 'papaparse';
-import { Plus, MoreHorizontal, X, Trash2, LayoutGrid, List as ListIcon, Search, Filter, Download, ChevronDown, User, Phone, Mail, Tag, CheckSquare, MessageSquare, Clock, ArrowUpDown, Calendar, Edit2, Target } from 'lucide-react';
+import { Plus, MoreHorizontal, X, Trash2, LayoutGrid, List as ListIcon, Search, Filter, Download, ChevronDown, User, Phone, Mail, Tag, CheckSquare, MessageSquare, Clock, ArrowUpDown, Calendar, Edit2, Target, BarChart, XCircle, TrendingUp, Users, Save } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { DndContext, DragEndEvent, useDraggable, useDroppable } from '@dnd-kit/core';
 import { Modal } from '../components/Modal';
 import { Opportunity, Task, Note, OpportunityActivity } from '../types';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
+
+
 import { canEditTask, canDeleteTask, canToggleTaskCompletion } from '../utils/taskPermissions';
-import { isUserAdmin } from '../lib/admin';
+import { isUserAdmin, ADMIN_CONFIG } from '../lib/admin';
+
+const safeFormat = (dateInput, formatStr) => {
+    try {
+        if (!dateInput) return '-';
+        let d;
+        if (typeof dateInput === 'string' || typeof dateInput === 'number') {
+            d = new Date(dateInput);
+        } else if (dateInput && typeof dateInput.toDate === 'function') {
+            d = dateInput.toDate();
+        } else {
+            d = new Date();
+        }
+        if (isNaN(d.getTime())) return '-';
+        return format(d, formatStr);
+    } catch(e) {
+        return '-';
+    }
+};
+
 
 interface DraggableCardProps {
     item: Opportunity;
@@ -107,7 +128,7 @@ const DraggableCard: React.FC<DraggableCardProps> = ({ item, color, onEdit, onDe
                         <div className="flex text-xs">
                             <span className="text-gray-500 w-32 shrink-0">Notes:</span>
                             <span className="text-gray-700 truncate italic">
-                                "{item.notes.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0].content}"
+                                "{[...item.notes].sort((a, b) => new Date((b.createdAt as any)?.seconds ? (b.createdAt as any).toDate() : b.createdAt || 0).getTime() - new Date((a.createdAt as any)?.seconds ? (a.createdAt as any).toDate() : a.createdAt || 0).getTime())[0]?.content || ''}"
                             </span>
                         </div>
                     )}
@@ -115,7 +136,7 @@ const DraggableCard: React.FC<DraggableCardProps> = ({ item, color, onEdit, onDe
                     <div className="flex text-xs">
                         <span className="text-gray-500 w-32 shrink-0">Follow up:</span>
                         <span className="text-gray-700 font-medium">
-                            {item.followUpDate ? format(new Date(item.followUpDate), 'MMM d, yyyy') : 'No date set'}
+                            {item.followUpDate ? safeFormat(item.followUpDate, 'MMM d, yyyy') : 'No date set'}
                         </span>
                     </div>
 
@@ -241,11 +262,157 @@ const DroppableColumn: React.FC<DroppableColumnProps> = ({ stage, items, onEdit,
     );
 };
 
+const AnalyticsDashboard = ({ opportunities, stages }: { opportunities: Opportunity[], stages: any[] }) => {
+    const stats = useMemo(() => {
+        const teamStats: Record<string, any> = {};
+        
+        // Initialize stats for all known users
+        ADMIN_CONFIG.USERS.forEach(user => {
+            teamStats[user.email.toLowerCase()] = {
+                name: user.name,
+                total: 0,
+                won: 0,
+                lost: 0,
+                inProgress: 0,
+                value: 0
+            };
+        });
+
+        opportunities.forEach(opp => {
+            const assignee = (opp.followUpAssignee || '').toLowerCase();
+            if (teamStats[assignee]) {
+                teamStats[assignee].total++;
+                teamStats[assignee].value += (Number(opp.value) || 0);
+                
+                const stageData = stages.find(s => s.id === opp.stage);
+                const stageTitle = stageData?.title.toLowerCase() || '';
+                
+                if (stageTitle.includes('won') || stageTitle.includes('closed') || stageTitle.includes('success')) {
+                    teamStats[assignee].won++;
+                } else if (stageTitle.includes('lost') || stageTitle.includes('junk') || stageTitle.includes('dead')) {
+                    teamStats[assignee].lost++;
+                } else {
+                    teamStats[assignee].inProgress++;
+                }
+            }
+        });
+
+        return Object.values(teamStats).sort((a: any, b: any) => b.total - a.total);
+    }, [opportunities, stages]);
+
+    return (
+        <div className="h-full overflow-auto p-4 md:p-6 bg-gray-50">
+            <div className="max-w-7xl mx-auto space-y-6">
+                <div className="flex items-center justify-between">
+                    <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                        <BarChart className="text-brand-blue" />
+                        Team Performance Analytics
+                    </h2>
+                </div>
+
+                {/* Summary Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                        <div className="text-gray-500 text-sm font-medium flex items-center gap-2 mb-1">
+                            <Target size={16} className="text-brand-blue" /> Total Leads
+                        </div>
+                        <div className="text-2xl font-bold text-gray-900">{opportunities.length}</div>
+                    </div>
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                        <div className="text-gray-500 text-sm font-medium flex items-center gap-2 mb-1">
+                            <TrendingUp size={16} className="text-green-500" /> Avg. Conversion
+                        </div>
+                        <div className="text-2xl font-bold text-gray-900">
+                            {opportunities.length ? Math.round((stats.reduce((acc, s) => acc + s.won, 0) / (opportunities.length || 1)) * 100) : 0}%
+                        </div>
+                    </div>
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                        <div className="text-gray-500 text-sm font-medium flex items-center gap-2 mb-1">
+                            <Users size={16} className="text-purple-500" /> Active Members
+                        </div>
+                        <div className="text-2xl font-bold text-gray-900">{stats.filter(s => s.total > 0).length}</div>
+                    </div>
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                        <div className="text-gray-500 text-sm font-medium flex items-center gap-2 mb-1">
+                            <Save size={16} className="text-yellow-500" /> Pipeline Value
+                        </div>
+                        <div className="text-2xl font-bold text-gray-900">
+                            ₹{stats.reduce((acc, s) => acc + s.value, 0).toLocaleString()}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Team Table */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                    <div className="p-4 border-b border-gray-100 bg-gray-50/50">
+                        <h3 className="font-bold text-gray-700">Team Member Breakdown</h3>
+                    </div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left">
+                            <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+                                <tr>
+                                    <th className="px-6 py-3 font-semibold">Employee</th>
+                                    <th className="px-6 py-3 font-semibold text-center">Total Leads</th>
+                                    <th className="px-6 py-3 font-semibold text-center">Won</th>
+                                    <th className="px-6 py-3 font-semibold text-center">Lost</th>
+                                    <th className="px-6 py-3 font-semibold text-center">Conversion</th>
+                                    <th className="px-6 py-3 font-semibold text-right">Value</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                                {stats.map((member: any) => (
+                                    <tr key={member.name} className="hover:bg-gray-50 transition-colors">
+                                        <td className="px-6 py-4">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-8 h-8 rounded-full bg-brand-blue/10 flex items-center justify-center text-brand-blue font-bold text-xs">
+                                                    {member.name.charAt(0)}
+                                                </div>
+                                                <span className="font-medium text-gray-900">{member.name}</span>
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4 text-center font-semibold text-gray-700">{member.total}</td>
+                                        <td className="px-6 py-4 text-center">
+                                            <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs font-bold">
+                                                {member.won}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4 text-center">
+                                            <span className="px-2 py-1 bg-red-100 text-red-700 rounded-full text-xs font-bold">
+                                                {member.lost}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <div className="flex flex-col items-center gap-1">
+                                                <span className="text-sm font-bold text-gray-800">
+                                                    {member.total ? Math.round((member.won / member.total) * 100) : 0}%
+                                                </span>
+                                                <div className="w-24 bg-gray-100 h-1.5 rounded-full overflow-hidden">
+                                                    <div 
+                                                        className="bg-brand-blue h-full rounded-full" 
+                                                        style={{ width: `${member.total ? (member.won / member.total) * 100 : 0}%` }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4 text-right font-bold text-gray-900">
+                                            ₹{member.value.toLocaleString()}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 const Opportunities: React.FC = () => {
     const { opportunities, appointments, stages, stageCounts, stagePagination, fetchOpportunities, fetchOpportunitiesByStage, loadMoreByStage, fetchStageCounts, updateOpportunity, addOpportunity, deleteOpportunity, bulkDeleteOpportunities, updateStages, currentUser, addAppointment, fetchAppointments, contacts, fetchContacts, addContact, updateContact, deleteContact, hasMoreOpportunities, loadMoreOpportunities, isLoading } = useStore();
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isPipelineModalOpen, setIsPipelineModalOpen] = useState(false);
-    const [viewMode, setViewMode] = useState<'board' | 'list'>('board');
+    const [viewMode, setViewMode] = useState<'board' | 'list' | 'analytics'>('board');
     const [editingId, setEditingId] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState('Contact Info');
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -288,10 +455,12 @@ const Opportunities: React.FC = () => {
     const [isAddingNote, setIsAddingNote] = useState(false);
 
     const TEAM_MEMBERS = [
-        { name: 'Komal', email: 'komal@digitalmojo.in', id: 'OwGcGoDXKdPVAMBNTyrY8nDqpmm2' },
         { name: 'Dhiraj', email: 'dhiraj@digitalmojo.in', id: '58Ba96qczERiK7DzBbMkpoko7Vx1' },
+        { name: 'Srishti', email: 'srishti@digitalmojo.in', id: 'placeholder-srishti' },
         { name: 'Rupal', email: 'rupal@digitalmojo.in', id: 'UNUwlgtVDUc6c9uQVMvBiYjmBYB2' },
-        { name: 'Veda', email: 'veda@digitalmojo.in', id: '6l7loPF90teRjJxy61ABWH5GUvX2' }
+        { name: 'Veda', email: 'veda@digitalmojo.in', id: '6l7loPF90teRjJxy61ABWH5GUvX2' },
+        { name: 'Komal', email: 'komal@digitalmojo.in', id: 'OwGcGoDXKdPVAMBNTyrY8nDqpmm2' },
+        { name: 'Aditya', email: 'aditya.digitalmojo@gmail.com', id: 'placeholder-aditya' }
     ];
 
     // Appointment State
@@ -458,6 +627,8 @@ const Opportunities: React.FC = () => {
                 return sortOrder === 'asc' ? dateA - dateB : dateB - dateA;
             }
             // Fallback to createdAt
+            // Force cache bust
+            console.log('Opportunities Tab Mounted - Build v3');
             return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
         } else {
             const dateA = new Date(a.createdAt || 0).getTime();
@@ -491,8 +662,17 @@ const Opportunities: React.FC = () => {
                 if (new Date(opp.followUpDate).getTime() < today) return false;
             }
 
-            const matchesMonth = filters.selectedMonth ? (opp.createdAt && opp.createdAt.startsWith(filters.selectedMonth)) : true;
-
+            let createdAtStr = '';
+            if (opp.createdAt) {
+                if (typeof opp.createdAt === 'string') {
+                    createdAtStr = opp.createdAt;
+                } else if (typeof (opp.createdAt as any).toDate === 'function') {
+                    createdAtStr = (opp.createdAt as any).toDate().toISOString();
+                } else {
+                    createdAtStr = new Date(opp.createdAt as any).toISOString();
+                }
+            }
+            const matchesMonth = filters.selectedMonth ? (createdAtStr.startsWith(filters.selectedMonth)) : true;
             // Assigned Leads Filter
             const matchesLeadFilter = leadFilter === 'assigned'
                 ? (opp.followUpAssignee === currentUser?.id || opp.followUpAssignee === currentUser?.email)
@@ -500,7 +680,7 @@ const Opportunities: React.FC = () => {
 
             return matchesSearch && matchesStage && matchesStatus && matchesType && matchesMonth && matchesLeadFilter;
         }).sort(sortOpps);
-    }, [opportunities, searchTerm, filters.stage, filters.status, filters.opportunityType, filters.selectedMonth, sortOrder, sortBy, stages, viewMode]);
+    }, [opportunities, searchTerm, filters.stage, filters.status, filters.opportunityType, filters.selectedMonth, sortOrder, sortBy, stages, viewMode, leadFilter]);
 
     const handleDragEnd = async (event: DragEndEvent) => {
         const { active, over } = event;
@@ -1153,6 +1333,15 @@ const Opportunities: React.FC = () => {
                         >
                             <ListIcon size={18} className="md:w-5 md:h-5" />
                         </button>
+                        {isUserAdmin(currentUser?.email) && (
+                            <button
+                                onClick={() => setViewMode('analytics' as any)}
+                                className={`p-1.5 md:p-2 rounded ${viewMode === 'analytics' as any ? 'bg-gray-100 text-brand-blue' : 'text-gray-500 hover:text-gray-700'}`}
+                                title="Team Analytics"
+                            >
+                                <BarChart size={18} className="md:w-5 md:h-5" />
+                            </button>
+                        )}
                     </div>
 
                     {/* Quick Status Filters */}
@@ -1265,7 +1454,7 @@ const Opportunities: React.FC = () => {
                                             <span className={`text-sm ${filters.stage.length === 0 ? 'text-brand-blue font-bold' : 'text-gray-600'}`}>All Stages</span>
                                         </label>
                                         <div className="my-1 border-t border-gray-200/50" />
-                                        {stages.sort((a, b) => getStageRank(a.title) - getStageRank(b.title)).map(s => (
+                                        {[...stages].sort((a, b) => getStageRank(a.title) - getStageRank(b.title)).map(s => (
                                             <label key={s.id} className="flex items-center gap-2 cursor-pointer hover:bg-white p-1.5 rounded transition-colors group">
                                                 <input
                                                     type="checkbox"
@@ -1380,6 +1569,8 @@ const Opportunities: React.FC = () => {
                             </div>
                         </div>
                     </DndContext>
+                ) : viewMode === 'analytics' ? (
+                    <AnalyticsDashboard opportunities={opportunities} stages={stages} />
                 ) : (
                     // List View
                     <div className="bg-white md:border border-gray-200 rounded-lg md:shadow-sm overflow-hidden flex flex-col h-full bg-gray-50/30 md:bg-white">
@@ -1445,7 +1636,7 @@ const Opportunities: React.FC = () => {
                                                             {latestNoteObj && (
                                                                 <div className="absolute z-50 invisible group-hover/note:visible bg-gray-900 text-white p-3 rounded-lg shadow-xl text-xs -top-2 left-3/4 ml-2 w-72 break-words pointer-events-none">
                                                                     <div className="font-bold mb-1 text-blue-400">
-                                                                        {format(new Date(latestNoteObj.createdAt), 'MMM d, h:mm a')}
+                                                                        {safeFormat(latestNoteObj.createdAt, 'MMM d, h:mm a')}
                                                                     </div>
                                                                     {latestNoteContent}
                                                                     <div className="absolute top-4 -left-1 w-2 h-2 bg-gray-900 rotate-45"></div>
@@ -1456,7 +1647,7 @@ const Opportunities: React.FC = () => {
                                                 })()}
                                             </td>
                                             <td className="p-4 text-sm text-gray-600">
-                                                {opp.followUpDate ? format(new Date(opp.followUpDate), 'MMM d, yyyy') : '-'}
+                                                {opp.followUpDate ? safeFormat(opp.followUpDate, 'MMM d, yyyy') : '-'}
                                             </td>
                                             <td className="p-4 text-sm text-gray-600">
                                                 {opp.source || '-'}
@@ -1479,7 +1670,7 @@ const Opportunities: React.FC = () => {
                                                 </span>
                                             </td>
                                             <td className="p-4 text-sm text-gray-500">
-                                                {opp.createdAt ? format(new Date(opp.createdAt), 'MMM d, yyyy h:mm a') : '-'}
+                                                {opp.createdAt ? safeFormat(opp.createdAt, 'MMM d, yyyy h:mm a') : '-'}
                                             </td>
                                             <td className="p-4 text-right" onClick={e => e.stopPropagation()}>
                                                 <button onClick={() => handleDelete(opp.id)} className="text-gray-400 hover:text-red-600 p-1">
@@ -1523,7 +1714,7 @@ const Opportunities: React.FC = () => {
                                                 <User size={12} className="text-gray-400" /> {opp.contactName || 'No contact'}
                                             </div>
                                             <div className="flex items-center gap-2 text-[11px] text-gray-600">
-                                                <Calendar size={12} className="text-gray-400" /> {opp.followUpDate ? format(new Date(opp.followUpDate), 'MMM d') : 'No follow-up'}
+                                                <Calendar size={12} className="text-gray-400" /> {opp.followUpDate ? safeFormat(opp.followUpDate, 'MMM d') : 'No follow-up'}
                                             </div>
                                             {opp.status && (
                                                 <div className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${opp.status === 'Won' ? 'bg-green-100 text-green-700' :
@@ -1814,7 +2005,7 @@ const Opportunities: React.FC = () => {
                                                                         <div key={note.id} className="p-3 bg-gray-50 border border-gray-200 rounded-lg group">
                                                                             <p className="text-sm text-gray-800 mb-1 whitespace-pre-wrap">{note.content}</p>
                                                                             <div className="flex justify-between items-center text-xs text-gray-500">
-                                                                                <span>{format(new Date(note.createdAt), 'MMM d, h:mm a')}</span>
+                                                                                <span>{safeFormat(note.createdAt, 'MMM d, h:mm a')}</span>
                                                                                 <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                                                                     <button onClick={() => handleStartEditNote(note)} className="text-gray-400 hover:text-brand-blue" title="Edit note">
                                                                                         <Edit2 size={14} />
@@ -1868,7 +2059,7 @@ const Opportunities: React.FC = () => {
                                                                 >
                                                                     <option value="">Select Assignee</option>
                                                                     {TEAM_MEMBERS.map(member => (
-                                                                        <option key={member.id} value={member.id}>{member.name}</option>
+                                                                        <option key={member.email} value={member.email}>{member.name}</option>
                                                                     ))}
                                                                 </select>
                                                             </div>
@@ -1911,7 +2102,7 @@ const Opportunities: React.FC = () => {
                                                                             {activity.type.replace('_', ' ')}
                                                                         </span>
                                                                         <span className="text-[10px] text-gray-500 font-medium">
-                                                                            {format(new Date(activity.timestamp), 'MMM d, yyyy • h:mm a')}
+                                                                            {safeFormat(activity.timestamp, 'MMM d, yyyy • h:mm a')}
                                                                         </span>
                                                                     </div>
                                                                     <p className="text-sm text-gray-800 font-medium">{activity.description}</p>
@@ -2388,7 +2579,7 @@ const Opportunities: React.FC = () => {
                                                                     <div className="flex justify-between items-center text-xs text-gray-500">
                                                                         <div className="flex items-center gap-1">
                                                                             <Clock size={12} />
-                                                                            <span>{format(new Date(note.createdAt), 'MMM d, yyyy h:mm a')}</span>
+                                                                            <span>{safeFormat(note.createdAt, 'MMM d, yyyy h:mm a')}</span>
                                                                         </div>
                                                                         <div className="flex items-center gap-3">
                                                                             <button onClick={() => handleStartEditNote(note)} className="text-gray-400 hover:text-brand-blue" title="Edit note">
@@ -2416,7 +2607,7 @@ const Opportunities: React.FC = () => {
                                     {editingId && (
                                         <>
                                             <p>Created By: Digital Mojo</p>
-                                            <p>Created on: {editingId && opportunities.find(o => o.id === editingId)?.createdAt ? format(new Date(opportunities.find(o => o.id === editingId)!.createdAt!), 'MMM d, yyyy h:mm a') : '-'} (IST)</p>
+                                            <p>Created on: {editingId && opportunities.find(o => o.id === editingId)?.createdAt ? safeFormat(opportunities.find(o => o.id === editingId)?.createdAt, 'MMM d, yyyy h:mm a') : '-'} (IST)</p>
                                             <a href="#" className="text-brand-blue hover:underline flex items-center gap-1 mt-1">
                                                 Audit Logs: {editingId} <Download size={12} />
                                             </a>
