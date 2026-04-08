@@ -8,6 +8,7 @@ const db = admin.firestore();
 // Wati Configuration from User
 const WATI_TOKEN = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1bmlxdWVfbmFtZSI6ImxlYWRzQGRpZ2l0YWxtb2pvLmluIiwibmFtZWlkIjoibGVhZHNAZGlnaXRhbG1vam8uaW4iLCJlbWFpbCI6ImxlYWRzQGRpZ2l0YWxtb2pvLmluIiwiYXV0aF90aW1lIjoiMDMvMjUvMjAyNiAxMTowMzo0OSIsInRlbmFudF9pZCI6IjEwMjc5NzEiLCJkYl9uYW1lIjoibXQtcHJvZC1UZW5hbnRzIiwiaHR0cDovL3NjaGVtYXMubWljcm9zb2Z0LmNvbS93cy8yMDA4LzA2L2lkZW50aXR5L2NsYWltcy9yb2xlIjoiQURNSU5JU1RSQVRPUiIsImV4cCI6MjUzNDAyMzAwODAwLCJpc3MiOiJDbGFyZV9BSSIsImF1ZCI6IkNsYXJlX0FJIn0.cIBcBq51XwIASupP4x9BLT8vN7-NdJ0cKM-6TDej3CM';
 const WATI_ENDPOINT = 'https://live-mt-server.wati.io/1027971';
+const ANTHROPIC_API_KEY = functions.config().anthropic?.key || process.env.ANTHROPIC_API_KEY;
 
 // Synchronized User List (from src/lib/admin.ts)
 const USERS = [
@@ -60,125 +61,152 @@ exports.whatsappWebhook = functions.https.onRequest(async (req, res) => {
 
     try {
         const payload = req.body;
-        // Always log the full raw payload for debugging
         console.log(`[WhatsApp Webhook] RAW PAYLOAD: ${JSON.stringify(payload)}`);
 
-        const eventType = payload.eventType || payload.type || '';
-        const isOwner = payload.owner === true; // owner=true means the message was SENT by the business (outgoing)
-        const statusString = payload.statusString || '';
-
-        // Log the event type for debugging
-        console.log(`[WhatsApp Webhook] eventType="${eventType}", owner=${isOwner}, status="${statusString}"`);
-
-        // Skip outgoing messages (sent by your business)
-        if (isOwner) {
-            console.log('[WhatsApp Webhook] Skipping outgoing message (owner=true)');
+        if (payload.owner === true) {
             return res.status(200).send('Skipped - Outgoing');
         }
 
-        // Accept: 'message' (Wati standard), 'messageReceived', 'message-received'
-        // Skip: empty eventType with status updates like DELIVERED, READ, FAILED, SENT
-        const allowedTypes = ['message', 'messagereceived', 'message-received', ''];
-        const isStatusUpdate = ['DELIVERED', 'READ', 'FAILED', 'SENT'].includes(statusString) && !payload.text && !payload.data;
+        // 1. Validation: Image + Caption
+        const hasImage = payload.type === 'image' || payload.messageType === 'image' || !!payload.image;
+        const leadName = (payload.text?.body || payload.caption || payload.text || '').trim();
+        const senderNumber = payload.waId || payload.whatsappNumber || payload.from || '';
 
-        if (!allowedTypes.includes(eventType.toLowerCase()) || isStatusUpdate) {
-            console.log(`[WhatsApp Webhook] Ignoring: eventType="${eventType}", statusUpdate=${isStatusUpdate}`);
-            return res.status(200).send('Ignored');
+        // Only process if it has an image and a caption (Lead Name)
+        if (!hasImage || !leadName) {
+            console.log('[WhatsApp Webhook] Not a screenshot + caption. Skipping as per "screenshot-only" request.');
+            
+            // If they sent an image but forgot the caption, send a hint
+            if (hasImage && !leadName && senderNumber) {
+                await axios.post(`${WATI_ENDPOINT}/api/v1/sendSessionMessage/${senderNumber}?messageText=${encodeURIComponent('⚠️ Please provide the Lead Name as a caption when sending a screenshot.')}`, {}, { headers: { Authorization: WATI_TOKEN } });
+            }
+            
+            return res.status(200).send('Ignored - Need image and caption');
         }
 
-        // Extract sender info from multiple possible Wati payload structures
-        const senderNumber = payload.waId || payload.whatsappNumber || payload.senderNumber || payload.from || '';
-        const senderName = payload.senderName || payload.contactName || payload.name || 'Unknown Contact';
-
-        // Extract message text from multiple possible fields
-        const messageText = (
-            payload.text?.body ||      // text.body (common Wati structure)
-            payload.text ||            // plain text field
-            payload.messageText ||     // another common field
-            payload.data ||            // fallback
-            ''
-        ).trim();
-
-        const cleanSender = senderNumber ? senderNumber.replace(/\D/g, '') : '';
-        console.log(`[WhatsApp Webhook] Sender: ${cleanSender} (${senderName}), Message: "${messageText}"`);
-
-        if (!cleanSender && !messageText) {
-            console.log('[WhatsApp Webhook] No sender or message, skipping.');
-            return res.status(200).send('Skipped - No data');
+        // 2. Download Image
+        const imageUrl = payload.image?.link || payload.data || payload.mediaUrl;
+        if (!imageUrl) {
+            console.error('[WhatsApp Webhook] Could not find image URL');
+            if (senderNumber) {
+                await axios.post(`${WATI_ENDPOINT}/api/v1/sendSessionMessage/${senderNumber}?messageText=${encodeURIComponent('❌ Failed to download screenshot. Please try again or send as a file.')}`, {}, { headers: { Authorization: WATI_TOKEN } });
+            }
+            return res.status(200).send('Error - No image URL');
         }
 
-        // --- LEAD PARSING ---
-        // Try strict "Lead:" format first: Lead: Name, Phone, Project, Value, Notes
-        const leadRegex = /lead[:\s]+\s*(.*?)[,，]\s*(.*?)[,，]\s*(.*?)[,，]\s*(.*?)[,，]\s*(.*)/i;
-        const match = messageText.match(leadRegex);
+        console.log(`[WhatsApp Webhook] Downloading image from: ${imageUrl}`);
+        const response = await axios.get(imageUrl, {
+            responseType: 'arraybuffer',
+            headers: { 'Authorization': WATI_TOKEN }
+        });
+        const base64Image = Buffer.from(response.data, 'binary').toString('base64');
 
-        let leadData;
-
-        if (match) {
-            // ✅ Parsed from message format
-            const [_, name, phone, project, value, notes] = match;
-            leadData = {
-                name: name.trim() || senderName,
-                phone: phone.trim() || cleanSender,
-                project: project.trim() || '',
-                value: parseFloat(value.trim().replace(/[^0-9.]/g, '')) || 0,
-                notes: [{ id: Date.now().toString(), content: notes.trim(), createdAt: new Date().toISOString() }],
-                source: 'WhatsApp (Wati) - Formatted',
-                rawMessage: messageText
-            };
-            console.log(`[WhatsApp Webhook] ✅ Parsed formatted lead: ${name.trim()}`);
-        } else {
-            // ⚠️ Fallback: create lead from raw contact info
-            // This ensures EVERY WhatsApp message creates a lead
-            leadData = {
-                name: senderName !== 'Unknown Contact' ? senderName : (cleanSender || 'WhatsApp Lead'),
-                phone: cleanSender || senderNumber,
-                project: '',
-                value: 0,
-                notes: messageText ? [{ id: Date.now().toString(), content: messageText, createdAt: new Date().toISOString() }] : [],
-                source: 'WhatsApp (Wati) - Auto',
-                rawMessage: messageText
-            };
-            console.log(`[WhatsApp Webhook] ⚠️ No "Lead:" format. Creating lead from contact: ${leadData.name}`);
-        }
-
-        // Create the opportunity in Firestore
-        const docRef = await db.collection('opportunities').add({
-            name: leadData.name,
-            contactName: leadData.name,
-            contactPhone: leadData.phone,
-            phone: leadData.phone,
-            project: leadData.project,
-            value: leadData.value,
-            notes: leadData.notes,
-            stage: '16', // Yet to contact
-            status: 'Open',
-            source: leadData.source,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            deadlineNotified: false,
-            followUpAssignee: '',
-            followUpDate: '',
-            followUpRead: false,
-            tags: [],
-            tasks: [],
-            activities: [
-                {
-                    id: Date.now().toString(),
-                    type: 'status_change',
-                    description: `Lead created via WhatsApp from ${cleanSender || senderName}`,
-                    timestamp: new Date().toISOString(),
-                    userName: 'Wati Automation'
-                }
-            ]
+        // 3. Extract Number via Claude
+        console.log(`[WhatsApp Webhook] Calling Claude for extraction...`);
+        const anthropicResponse = await axios.post('https://api.anthropic.com/v1/messages', {
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 256,
+            messages: [{
+                role: 'user',
+                content: [
+                    {
+                        type: 'image',
+                        source: {
+                            type: 'base64',
+                            media_type: 'image/jpeg',
+                            data: base64Image
+                        }
+                    },
+                    {
+                        type: 'text',
+                        text: 'Extract the phone number from this screenshot. It may be a dialpad, call log, saved contact, or WhatsApp screen. Return ONLY valid JSON with one field: {"phone": "<number>"}. Include country code if visible. If no number found return {"phone": null}.'
+                    }
+                ]
+            }]
+        }, {
+            headers: {
+                'x-api-key': ANTHROPIC_API_KEY,
+                'anthropic-version': '2023-06-01',
+                'Content-Type': 'application/json'
+            }
         });
 
-        console.log(`[WhatsApp Webhook] ✅ Lead created: ${docRef.id} for ${leadData.name}`);
-        return res.status(200).json({ success: true, leadId: docRef.id, name: leadData.name });
+        const extractionText = anthropicResponse.data.content[0].text;
+        console.log(`[WhatsApp Webhook] Claude Response: ${extractionText}`);
+        const { phone: phoneFromClaude } = JSON.parse(extractionText.match(/\{.*\}/s)[0]);
+
+        if (!phoneFromClaude) {
+            await axios.post(`${WATI_ENDPOINT}/api/v1/sendSessionMessage/${senderNumber}?messageText=${encodeURIComponent('❌ Could not read the phone number from the screenshot. Please resend or type the lead manually.')}`, {}, { headers: { Authorization: WATI_TOKEN } });
+            return res.status(200).send('Failed - No number found');
+        }
+
+        // 4. Round-Robin Assignment
+        const configRef = db.collection('config').doc('assignment');
+        const configDoc = await configRef.get();
+        let assignedTo = 'Rupal';
+        if (configDoc.exists) {
+            const lastAssigned = configDoc.data().lastAssigned;
+            assignedTo = lastAssigned === 'Rupal' ? 'Veda' : 'Rupal';
+        }
+        await configRef.set({ lastAssigned: assignedTo, updatedAt: new Date().toISOString() }, { merge: true });
+
+        // 5. Create Opportunity
+        const opportunityData = {
+            name: leadName,
+            contactName: leadName,
+            contactPhone: phoneFromClaude,
+            phone: phoneFromClaude,
+            value: 0,
+            stage: '16', // Yet to contact
+            status: 'Open',
+            source: 'WhatsApp (Screenshot)',
+            owner: assignedTo,
+            followUpAssignee: assignedTo,
+            tags: [],
+            tasks: [],
+            notes: [],
+            followUpDate: '',
+            followUpRead: false,
+            deadlineNotified: false,
+            assignmentNotified: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            activities: [{
+                id: Date.now().toString(),
+                type: 'status_change',
+                description: `Lead created from screenshot sent by ${senderNumber}`,
+                timestamp: new Date().toISOString(),
+                userName: 'Wati Automation'
+            }]
+        };
+
+        const docRef = await db.collection('opportunities').add(opportunityData);
+        console.log(`[WhatsApp Webhook] ✅ Created lead ${docRef.id} for ${leadName}`);
+
+        // 6. Confirmation Feedback
+        try {
+            await sendWatiTemplate(senderNumber, 'lead_created_confirmation', [leadName, phoneFromClaude, assignedTo]);
+        } catch (e) {
+            console.log('[WhatsApp Webhook] Template failed, using session message fallback.');
+            await axios.post(`${WATI_ENDPOINT}/api/v1/sendSessionMessage/${senderNumber}?messageText=${encodeURIComponent(`✅ Lead created!\nName: ${leadName}\nPhone: ${phoneFromClaude}\nAssigned to: ${assignedTo}`)}`, {}, { headers: { Authorization: WATI_TOKEN } });
+        }
+
+        return res.status(200).json({ success: true, leadId: docRef.id });
 
     } catch (error) {
-        console.error('[WhatsApp Webhook] ERROR:', error);
-        return res.status(500).json({ error: 'Internal Error', message: error.message });
+        console.error('[WhatsApp Webhook] ERROR:', error.response?.data || error.message);
+        
+        // Notify the sender about the failure
+        const senderNumber = req.body?.waId || req.body?.whatsappNumber || req.body?.from || '';
+        if (senderNumber) {
+            try {
+                await axios.post(`${WATI_ENDPOINT}/api/v1/sendSessionMessage/${senderNumber}?messageText=${encodeURIComponent('❌ Failed to create lead in CRM. Please contact support or try again later.')}`, {}, { headers: { Authorization: WATI_TOKEN } });
+            } catch (notifyErr) {
+                console.error('[WhatsApp Webhook] Second-level error notification failed:', notifyErr.message);
+            }
+        }
+        
+        return res.status(500).send('Internal Error');
     }
 });
 
@@ -234,10 +262,10 @@ exports.deadlineAlerts = functions.pubsub.schedule('every 10 minutes').onRun(asy
                 try {
                     if (sendAssignmentMsg || sendDeadlineMsg) {
                         console.log(`[Deadline Alerts] Sending template notification to ${user.name} for lead ${lead.name}...`);
-                        
+
                         let templateName = '';
                         let params = [];
-                        
+
                         if (sendAssignmentMsg) {
                             // Using template: lead_assignment_v1
                             // Params: {{1}}=Name, {{2}}=Project, {{3}}=Follow-up Date
@@ -273,3 +301,4 @@ exports.deadlineAlerts = functions.pubsub.schedule('every 10 minutes').onRun(asy
 
     return null;
 });
+

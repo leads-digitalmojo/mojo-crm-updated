@@ -5,11 +5,11 @@ import { resetAllTasks } from '../utils/resetTasks';
 export const ADMIN_CONFIG = {
     // List of allowed users with their emails and phone numbers (for Wati integration)
     USERS: [
-        { name: 'Dhiraj', email: 'dhiraj@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: true },
-        { name: 'Srishti', email: 'srishti@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: true },
-        { name: 'Rupal', email: 'rupal@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: false },
-        { name: 'Veda', email: 'veda@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: false },
-        { name: 'Komal', email: 'komal@digitalmojo.in', phone: '91xxxxxxxxxx', isAdmin: false },
+        { name: 'Dhiraj', email: 'dhiraj@digitalmojo.in', phone: '919908398763', isAdmin: true },
+        { name: 'Srishti', email: 'srishti@digitalmojo.in', phone: '919899488155', isAdmin: true },
+        { name: 'Rupal', email: 'rupal@digitalmojo.in', phone: '919676670777', isAdmin: false },
+        { name: 'Veda', email: 'veda@digitalmojo.in', phone: '919032157788', isAdmin: false },
+        { name: 'Komal', email: 'komal@digitalmojo.in', phone: '917981245752', isAdmin: false },
         { name: 'Aditya', email: 'aditya.digitalmojo@gmail.com', phone: '918017699390', isAdmin: false }
     ],
 
