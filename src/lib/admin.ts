@@ -5,12 +5,12 @@ import { resetAllTasks } from '../utils/resetTasks';
 export const ADMIN_CONFIG = {
     // List of allowed users with their emails and phone numbers (for Wati integration)
     USERS: [
-        { name: 'Dhiraj', email: 'dhiraj@digitalmojo.in', phone: '919908398763', isAdmin: true },
-        { name: 'Srishti', email: 'srishti@digitalmojo.in', phone: '919899488155', isAdmin: true },
-        { name: 'Rupal', email: 'rupal@digitalmojo.in', phone: '919676670777', isAdmin: false },
-        { name: 'Veda', email: 'veda@digitalmojo.in', phone: '919032157788', isAdmin: false },
-        { name: 'Komal', email: 'komal@digitalmojo.in', phone: '917981245752', isAdmin: false },
-        { name: 'Aditya', email: 'aditya.digitalmojo@gmail.com', phone: '918017699390', isAdmin: false }
+        { name: 'Dhiraj', email: 'dhiraj@digitalmojo.in', phone: '919908398763', isAdmin: true, id: '58Ba96qczERiK7DzBbMkpoko7Vx1' },
+        { name: 'Srishti', email: 'srishti@digitalmojo.in', phone: '919899488155', isAdmin: true, id: 'srishti-mojo-id' },
+        { name: 'Rupal', email: 'rupal@digitalmojo.in', phone: '919676670777', isAdmin: false, id: 'UNUwlgtVDUc6c9uQVMvBiYjmBYB2' },
+        { name: 'Veda', email: 'veda@digitalmojo.in', phone: '919032157788', isAdmin: false, id: '6l7loPF90teRjJxy61ABWH5GUvX2' },
+        { name: 'Komal', email: 'komal@digitalmojo.in', phone: '917981245752', isAdmin: false, id: 'OwGcGoDXKdPVAMBNTyrY8nDqpmm2' },
+        { name: 'Aditya', email: 'aditya.digitalmojo@gmail.com', phone: '918017699390', isAdmin: true, id: 'aditya-mojo-id' }
     ],
 
     // Set a hard limit on the number of users who can register
@@ -24,6 +24,8 @@ export const ADMIN_CONFIG = {
 
     // Require location permission for entry
     LOCATION_PERMISSION_REQUIRED: true,
+    // Set to true to block access if location is not provided
+    LOCATION_PERMISSION_STRICT: false,
 };
 
 // Derived lists for compatibility

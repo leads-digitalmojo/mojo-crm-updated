@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import Papa from 'papaparse';
 import { Plus, MoreHorizontal, X, Trash2, LayoutGrid, List as ListIcon, Search, Filter, Download, ChevronDown, User, Phone, Mail, Tag, CheckSquare, MessageSquare, Clock, ArrowUpDown, Calendar, Edit2, Target, BarChart, XCircle, TrendingUp, Users, Save } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { DndContext, DragEndEvent, useDraggable, useDroppable } from '@dnd-kit/core';
 import { Modal } from '../components/Modal';
-import { Opportunity, Task, Note, OpportunityActivity } from '../types';
+import { Opportunity, Task, Note, OpportunityActivity, Appointment } from '../types';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 
@@ -39,7 +39,7 @@ interface DraggableCardProps {
     nextAppointment?: { date: string; time: string; title: string };
 }
 
-const DraggableCard: React.FC<DraggableCardProps> = ({ item, color, onEdit, onDelete, nextAppointment }) => {
+const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete, nextAppointment }) => {
     const { stages } = useStore();
     const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
         id: item.id,
@@ -178,7 +178,9 @@ const DraggableCard: React.FC<DraggableCardProps> = ({ item, color, onEdit, onDe
             </div>
         </div>
     );
-};
+});
+
+DraggableCard.displayName = 'DraggableCard';
 
 interface DroppableColumnProps {
     stage: { id: string; title: string; color: string };
@@ -190,9 +192,10 @@ interface DroppableColumnProps {
     isLoading?: boolean;
     totalCount: number;
     totalValue: number;
+    appointments?: Appointment[];
 }
 
-const DroppableColumn: React.FC<DroppableColumnProps> = ({ stage, items, onEdit, onDelete, hasMore, onLoadMore, isLoading, totalCount, totalValue, appointments }) => {
+const DroppableColumn = memo<DroppableColumnProps>(({ stage, items, onEdit, onDelete, hasMore, onLoadMore, isLoading, totalCount, totalValue, appointments }) => {
     const { setNodeRef } = useDroppable({
         id: stage.id,
     });
@@ -260,7 +263,9 @@ const DroppableColumn: React.FC<DroppableColumnProps> = ({ stage, items, onEdit,
             </div>
         </div>
     );
-};
+});
+
+DroppableColumn.displayName = 'DroppableColumn';
 
 const AnalyticsDashboard = ({ opportunities, stages }: { opportunities: Opportunity[], stages: any[] }) => {
     const stats = useMemo(() => {
@@ -278,14 +283,15 @@ const AnalyticsDashboard = ({ opportunities, stages }: { opportunities: Opportun
             };
         });
 
-        opportunities.forEach(opp => {
+        (opportunities || []).forEach(opp => {
+            if (!opp) return; // Guard against null/undefined in array
             const assignee = (opp.followUpAssignee || '').toLowerCase();
             if (teamStats[assignee]) {
                 teamStats[assignee].total++;
                 teamStats[assignee].value += (Number(opp.value) || 0);
                 
-                const stageData = stages.find(s => s.id === opp.stage);
-                const stageTitle = stageData?.title.toLowerCase() || '';
+                const stageData = (stages || []).find(s => s.id === opp.stage);
+                const stageTitle = stageData?.title?.toLowerCase() || '';
                 
                 if (stageTitle.includes('won') || stageTitle.includes('closed') || stageTitle.includes('success')) {
                     teamStats[assignee].won++;
@@ -294,10 +300,17 @@ const AnalyticsDashboard = ({ opportunities, stages }: { opportunities: Opportun
                 } else {
                     teamStats[assignee].inProgress++;
                 }
+            } else if (assignee) {
+                // If assignee exists but not in whitelist, track them anyway to avoid data loss
+                if (!teamStats[assignee]) {
+                    teamStats[assignee] = { name: assignee, total: 0, won: 0, lost: 0, inProgress: 0, value: 0 };
+                }
+                teamStats[assignee].total++;
+                teamStats[assignee].value += (Number(opp.value) || 0);
             }
         });
 
-        return Object.values(teamStats).sort((a: any, b: any) => b.total - a.total);
+        return Object.values(teamStats).sort((a: any, b: any) => (b.total || 0) - (a.total || 0));
     }, [opportunities, stages]);
 
     return (
@@ -454,14 +467,7 @@ const Opportunities: React.FC = () => {
     const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
     const [isAddingNote, setIsAddingNote] = useState(false);
 
-    const TEAM_MEMBERS = [
-        { name: 'Dhiraj', email: 'dhiraj@digitalmojo.in', id: '58Ba96qczERiK7DzBbMkpoko7Vx1' },
-        { name: 'Srishti', email: 'srishti@digitalmojo.in', id: 'placeholder-srishti' },
-        { name: 'Rupal', email: 'rupal@digitalmojo.in', id: 'UNUwlgtVDUc6c9uQVMvBiYjmBYB2' },
-        { name: 'Veda', email: 'veda@digitalmojo.in', id: '6l7loPF90teRjJxy61ABWH5GUvX2' },
-        { name: 'Komal', email: 'komal@digitalmojo.in', id: 'OwGcGoDXKdPVAMBNTyrY8nDqpmm2' },
-        { name: 'Aditya', email: 'aditya.digitalmojo@gmail.com', id: 'placeholder-aditya' }
-    ];
+    const TEAM_MEMBERS = ADMIN_CONFIG.USERS;
 
     // Appointment State
     const [appointmentForm, setAppointmentForm] = useState({
@@ -510,6 +516,7 @@ const Opportunities: React.FC = () => {
     });
 
     const getStageRank = (title: string) => {
+        if (!title || typeof title !== 'string') return 999;
         const match = title.match(/^(\d+(\.\d+)?)/);
         return match ? parseFloat(match[1]) : 999;
     };
@@ -643,13 +650,13 @@ const Opportunities: React.FC = () => {
         const today = now.getTime();
 
         return opportunities.filter(opp => {
-            // Text Search
+            // Text Search with null-safety
             const matchesSearch =
-                opp.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                opp.contactName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                opp.companyName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                opp.contactPhone?.includes(searchTerm) ||
-                opp.source?.toLowerCase().includes(searchTerm.toLowerCase());
+                (opp.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (opp.contactName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (opp.companyName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (opp.contactPhone || '').includes(searchTerm) ||
+                (opp.source || '').toLowerCase().includes(searchTerm.toLowerCase());
 
             // Advanced Filters
             const matchesStage = filters.stage.length > 0 ? filters.stage.includes(opp.stage) : true;
@@ -838,7 +845,7 @@ const Opportunities: React.FC = () => {
                         type: '',
                         companyName: formData.name,
                         owner: currentUser?.id || 'Unknown',
-                        Value: formData.contactValue
+                        Value: (formData.contactValue as 'Standard' | 'Mid' | 'High') || 'Standard'
                     });
                     finalContactId = newContact.id;
                     toast.success(`New contact "${newContact.name}" created`);

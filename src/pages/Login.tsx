@@ -70,10 +70,12 @@ const Login: React.FC = () => {
                 permissionStatus = await getLocationPermission();
                 toast.dismiss('location-check');
 
-                if (permissionStatus !== 'granted') {
+                if (permissionStatus !== 'granted' && ADMIN_CONFIG.LOCATION_PERMISSION_STRICT) {
                     await signOut(auth);
                     toast.error('Location permission is required to access this CRM. Please enable it in your browser settings.');
                     return;
+                } else if (permissionStatus !== 'granted') {
+                    toast.error('Location not detected, but letting you in. Please check browser settings for better security.', { duration: 5000 });
                 }
             }
 
@@ -136,10 +138,12 @@ const Login: React.FC = () => {
                 permissionStatus = await getLocationPermission();
                 toast.dismiss('location-check');
 
-                if (permissionStatus !== 'granted') {
+                if (permissionStatus !== 'granted' && ADMIN_CONFIG.LOCATION_PERMISSION_STRICT) {
                     await signOut(auth);
                     toast.error('Location permission is required to access this CRM. Please enable it in your browser settings.');
                     return;
+                } else if (permissionStatus !== 'granted') {
+                    toast.error('Location not detected, but letting you in.', { duration: 5000 });
                 }
             }
 

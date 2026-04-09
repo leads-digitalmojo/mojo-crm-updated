@@ -1,6 +1,7 @@
 import { db } from '../lib/firebase';
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, getDoc, arrayUnion, query, orderBy, onSnapshot, where, startAfter, limit, setDoc } from 'firebase/firestore';
 import { Contact, Opportunity, Appointment, Conversation, Message, Notification, LoginLog } from '../types';
+import { getTimeSafe, formatSafeDate, parseSafeDate } from '../utils/dateUtils';
 import { isDemoMode } from '../lib/demoData';
 import { mockApi } from './mockApi';
 
@@ -293,42 +294,31 @@ const firebaseApi = {
 
             return counts;
         },
-        // Get comprehensive dashboard statistics
         getDashboardStats: async (daysBack: number = 30) => {
-            const q = query(collection(db, 'opportunities'));
-            const querySnapshot = await getDocs(q);
-            const allOpportunities = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Opportunity));
-
-            let filteredOpportunities = allOpportunities;
-
+            try {
+                let q = query(collection(db, 'opportunities'));
+            
             if (daysBack > 0) {
                 const now = new Date();
-                now.setHours(23, 59, 59, 999); // End of today
-
                 const pastDate = new Date();
-                // For "Today" (daysBack=1), we want just today, so subtract (daysBack - 1) = 0 days
-                // For "Last 7 Days" (daysBack=7), we want today and 6 previous days, so subtract 6 days
                 pastDate.setDate(now.getDate() - (daysBack - 1));
-                pastDate.setHours(0, 0, 0, 0); // Start of the first day
-
-                // Filter by time range - strictly filter by createdAt
-                filteredOpportunities = allOpportunities.filter(opp => {
-                    // Exclude opportunities without createdAt for accurate filtering in specific time ranges
-                    if (!opp.createdAt) return false;
-
-                    try {
-                        const oppDate = new Date(opp.createdAt);
-                        // Check if date is valid
-                        if (isNaN(oppDate.getTime())) return false;
-                        return oppDate >= pastDate && oppDate <= now;
-                    } catch {
-                        return false; // Exclude if date parsing fails
-                    }
-                });
-            } else {
-                // Return ALL opportunities for "Total" view (don't filter by date)
-                filteredOpportunities = allOpportunities;
+                pastDate.setHours(0, 0, 0, 0);
+                
+                // Handle both ISO strings and Timestamp-based legacy data in queries is tricky.
+                // We'll filter client-side for absolute accuracy if we catch a mix, 
+                // but the ISO comparison works for strings. 
+                q = query(
+                    collection(db, 'opportunities'),
+                    where('createdAt', '>=', pastDate.toISOString())
+                );
             }
+
+            const querySnapshot = await getDocs(q);
+            const filteredOpportunities = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Opportunity));
+
+            const now = new Date();
+            now.setHours(23, 59, 59, 999);
+
 
             // Calculate stats
             const totalOpportunities = filteredOpportunities.length;
@@ -351,16 +341,18 @@ const firebaseApi = {
 
             // Pipeline trend (cumulative value over time)
             const sortedOpps = [...filteredOpportunities].sort((a, b) =>
-                new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+                getTimeSafe(a.createdAt) - getTimeSafe(b.createdAt)
             );
 
             let cumulativeValue = 0;
             const trendMap = new Map<string, number>();
             sortedOpps.forEach(opp => {
                 if (opp.createdAt) {
-                    const date = new Date(opp.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                    cumulativeValue += Number(opp.value || 0);
-                    trendMap.set(date, cumulativeValue);
+                    const date = formatSafeDate(opp.createdAt);
+                    if (date !== 'N/A') {
+                        cumulativeValue += Number(opp.value || 0);
+                        trendMap.set(date, cumulativeValue);
+                    }
                 }
             });
             const pipelineTrend = Array.from(trendMap.entries()).map(([name, value]) => ({ name, value }));
@@ -371,22 +363,37 @@ const firebaseApi = {
             const pendingTasks = allTasks.length - completedTasks;
 
             return {
-                totalOpportunities,
-                totalPipelineValue,
-                wonOpportunities,
-                lostOpportunities,
-                openOpportunities,
-                conversionRate,
-                stageBreakdown,
-                pipelineTrend,
+                totalOpportunities: totalOpportunities || 0,
+                totalPipelineValue: totalPipelineValue || 0,
+                wonOpportunities: wonOpportunities || 0,
+                lostOpportunities: lostOpportunities || 0,
+                openOpportunities: openOpportunities || 0,
+                conversionRate: conversionRate || 0,
+                stageBreakdown: stageBreakdown || {},
+                pipelineTrend: pipelineTrend || [],
                 taskStats: {
-                    completed: completedTasks,
-                    pending: pendingTasks,
-                    total: allTasks.length
+                    completed: completedTasks || 0,
+                    pending: pendingTasks || 0,
+                    total: allTasks.length || 0
                 },
-                allOpportunities: filteredOpportunities
+                allOpportunities: filteredOpportunities || []
             };
-        },
+        } catch (error) {
+            console.error('Error fetching dashboard stats:', error);
+            return {
+                totalOpportunities: 0,
+                totalPipelineValue: 0,
+                wonOpportunities: 0,
+                lostOpportunities: 0,
+                openOpportunities: 0,
+                conversionRate: 0,
+                stageBreakdown: {},
+                pipelineTrend: [],
+                taskStats: { completed: 0, pending: 0, total: 0 },
+                allOpportunities: []
+            };
+        }
+    },
         // Remove duplicate opportunities based on name + contactId
         removeDuplicates: async () => {
             const q = query(collection(db, 'opportunities'));

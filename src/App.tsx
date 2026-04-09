@@ -5,6 +5,7 @@ import { useStore } from './store/useStore';
 import { Toaster, toast, useToasterStore } from 'react-hot-toast';
 import { Loader2, X } from 'lucide-react';
 import ReminderManager from './components/ReminderManager';
+import ErrorBoundary from './components/ErrorBoundary';
 import { getTrackingInfo, getLocationPermission } from './utils/tracking';
 import { ADMIN_CONFIG, isUserAdmin } from './lib/admin';
 import { api } from './services/api';
@@ -79,7 +80,7 @@ const App: React.FC = () => {
         let permissionStatus: 'granted' | 'denied' | 'prompt' = 'prompt';
         if (ADMIN_CONFIG.LOCATION_PERMISSION_REQUIRED) {
           permissionStatus = await getLocationPermission();
-          if (permissionStatus !== 'granted') {
+          if (permissionStatus !== 'granted' && ADMIN_CONFIG.LOCATION_PERMISSION_STRICT) {
             await signOut(auth);
             toast.error('Location permission is required. Session revoked.');
             return;
@@ -115,10 +116,18 @@ const App: React.FC = () => {
 
         <Route element={<PrivateRoute />}>
           <Route element={<Layout><Outlet /></Layout>}>
-            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/dashboard" element={
+              <ErrorBoundary fallbackName="Dashboard">
+                <Dashboard />
+              </ErrorBoundary>
+            } />
             <Route path="/calendars" element={<Calendars />} />
             {/* Contacts routes removed */}
-            <Route path="/opportunities" element={<Opportunities />} />
+            <Route path="/opportunities" element={
+              <ErrorBoundary fallbackName="Opportunities">
+                <Opportunities />
+              </ErrorBoundary>
+            } />
             <Route path="/tasks" element={<Tasks />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/profile" element={<Profile />} />
