@@ -49,6 +49,24 @@ export interface OpportunityActivity {
   newValue?: string;
 }
 
+export interface Call {
+  id: string; 
+  duration: number; // in seconds
+  startTime: string; // ISO string
+  userName: string; // Who made the call
+  answered: boolean;
+  type: 'Incoming' | 'Outgoing' | string;
+  status?: string; // e.g. "Missed Call", "Not Answered", "Completed"
+  recordingUrl?: string;
+  aiAnalysis?: {
+    rating: number;
+    summary: string;
+    goodFeatures: string[];
+    improvements: string[];
+    transcription?: string;
+  };
+}
+
 export interface Opportunity {
   id: string;
   name: string;
@@ -61,6 +79,7 @@ export interface Opportunity {
   contactName?: string;
   contactEmail?: string;
   contactPhone?: string;
+  secondaryPhones?: string[]; // Alternative contact numbers
   companyName?: string;
   source?: string;
   utm_source?: string;
@@ -75,9 +94,20 @@ export interface Opportunity {
   notes?: Note[];
   followUpDate?: string;
   followUpRead?: boolean;
-  opportunityType?: 'Real Estate' | 'Others';
+  opportunityType?: 'Real Estate' | 'Others' | 'adcalculator' | 'meta ads';
   followUpAssignee?: string;
+  assignmentNotified?: boolean;
+  urgentAlertSent?: boolean;
   activities?: OpportunityActivity[];
+  calls?: Call[];
+  lastSalesAssetsSent?: string;
+  isAIPending?: boolean;
+  aiCallId?: string;
+  aiCallStatus?: 'Scheduled' | 'Calling...' | 'Completed' | 'Failed' | 'Disqualified' | string;
+  aiTranscript?: string;
+  aiSummary?: string;
+  aiSuggestions?: string[];
+  aiCallDuration?: number;
 }
 
 export interface PipelineColumn {
@@ -150,4 +180,19 @@ export interface LoginLog {
   org?: string; // ISP
   userAgent: string;
   locationPermission: 'granted' | 'denied' | 'prompt';
+}
+
+export interface DiscoveryResponse {
+  id: string;
+  phone: string;
+  submittedAt: string;
+  responses: Record<string, string>;
+  aiAnalysis?: {
+    strategy: string;
+    talkingPoints: string[];
+    openingScript: string;
+    hotButtons: string[];
+    concerns: string[];
+  };
+  aiAnalyzedAt?: string;
 }

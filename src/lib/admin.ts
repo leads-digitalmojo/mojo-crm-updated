@@ -10,11 +10,12 @@ export const ADMIN_CONFIG = {
         { name: 'Rupal', email: 'rupal@digitalmojo.in', phone: '919676670777', isAdmin: false, id: 'UNUwlgtVDUc6c9uQVMvBiYjmBYB2' },
         { name: 'Veda', email: 'veda@digitalmojo.in', phone: '919032157788', isAdmin: false, id: '6l7loPF90teRjJxy61ABWH5GUvX2' },
         { name: 'Komal', email: 'komal@digitalmojo.in', phone: '917981245752', isAdmin: false, id: 'OwGcGoDXKdPVAMBNTyrY8nDqpmm2' },
-        { name: 'Aditya', email: 'aditya.digitalmojo@gmail.com', phone: '918017699390', isAdmin: true, id: 'aditya-mojo-id' }
+        { name: 'Aditya', email: 'aditya.digitalmojo@gmail.com', phone: '918017699390', isAdmin: true, id: 'aditya-mojo-id' },
+        { name: 'Anshita', email: 'anshita@digitalmojo.in', phone: '919701802211', isAdmin: false, id: 'anshita-mojo-id' }
     ],
 
     // Set a hard limit on the number of users who can register
-    MAX_USERS: 6,
+    MAX_USERS: 7,
 
     // Set this to false to allow any Firebase user to login
     ENFORCE_WHITELIST: true,

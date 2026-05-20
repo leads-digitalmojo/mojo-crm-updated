@@ -23,6 +23,7 @@ import Tasks from './pages/Tasks';
 import Settings from './pages/Settings';
 import Profile from './pages/Profile';
 import Logs from './pages/Logs';
+import RedFlags from './pages/RedFlags';
 
 const PrivateRoute = () => {
   const { currentUser, isLoadingAuth } = useStore();
@@ -133,6 +134,9 @@ const App: React.FC = () => {
             <Route path="/profile" element={<Profile />} />
             <Route path="/logs" element={
               isUserAdmin(currentUser?.email) ? <Logs /> : <Navigate to="/dashboard" replace />
+            } />
+            <Route path="/red-flags" element={
+              isUserAdmin(currentUser?.email) ? <RedFlags /> : <Navigate to="/dashboard" replace />
             } />
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
           </Route>

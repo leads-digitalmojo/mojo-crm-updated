@@ -1,6 +1,7 @@
-import { db } from '../lib/firebase';
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, getDoc, arrayUnion, query, orderBy, onSnapshot, where, startAfter, limit, setDoc } from 'firebase/firestore';
-import { Contact, Opportunity, Appointment, Conversation, Message, Notification, LoginLog } from '../types';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from '../lib/firebase';
+import { Contact, Opportunity, Appointment, Conversation, Message, Notification, LoginLog, DiscoveryResponse } from '../types';
 import { getTimeSafe, formatSafeDate, parseSafeDate } from '../utils/dateUtils';
 import { isDemoMode } from '../lib/demoData';
 import { mockApi } from './mockApi';
@@ -453,6 +454,20 @@ const firebaseApi = {
             }
 
             return { updated: legacyOpps.length };
+        },
+
+        clearLeadsByStage: async (stageId: string) => {
+            const q = query(collection(db, 'opportunities'), where('stage', '==', stageId));
+            const querySnapshot = await getDocs(q);
+            const ids = querySnapshot.docs.map(doc => doc.id);
+            
+            if (ids.length === 0) return { success: true, removed: 0 };
+
+            // Delete docs
+            const promises = ids.map(id => deleteDoc(doc(db, 'opportunities', id)));
+            await Promise.all(promises);
+            
+            return { success: true, removed: ids.length };
         }
     },
     appointments: {
@@ -562,6 +577,69 @@ const firebaseApi = {
         create: async (log: Omit<LoginLog, 'id'>) => {
             const docRef = await addDoc(collection(db, 'login_logs'), log);
             return { id: docRef.id, ...log } as LoginLog;
+        }
+    },
+    settings: {
+        getSalesAssets: async () => {
+            const docRef = doc(db, 'settings', 'sales_assets');
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+                return docSnap.data();
+            }
+            return {
+                pdf1Url: '',
+                pdf2Url: '',
+                formUrl: 'https://docs.google.com/forms/d/1oejLDSS_mYJDks3YQVjJSsGmsNc3ofRacpB4dJezYgs/edit'
+            };
+        },
+        updateSalesAssets: async (data: { pdf1Url: string, pdf2Url: string, formUrl: string }) => {
+            const docRef = doc(db, 'settings', 'sales_assets');
+            await setDoc(docRef, { ...data, updatedAt: new Date().toISOString() });
+        }
+    },
+    discovery: {
+        getResponses: async (phone: string) => {
+            if (!phone) return [];
+            
+            // Aggressive normalization: keep only last 10 digits
+            const cleanDigits = phone.toString().replace(/\D/g, '');
+            const normalizedPhone = cleanDigits.slice(-10);
+            
+            console.log(`[Discovery Search] Original: "${phone}", Normalized: "${normalizedPhone}"`);
+
+            try {
+                const q = query(
+                    collection(db, 'discovery_responses'),
+                    where('phone', '==', normalizedPhone)
+                );
+                
+                const snapshot = await getDocs(q);
+                console.log(`[Discovery Search] Found ${snapshot.size} responses for ${normalizedPhone}`);
+                
+                const responses = snapshot.docs.map(doc => ({ 
+                    id: doc.id, 
+                    ...doc.data() 
+                } as DiscoveryResponse));
+                
+                // Sort by submission date (newest first)
+                return responses.sort((a, b) => 
+                    new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+                );
+            } catch (err) {
+                console.error('[Discovery Search] Firestore Error:', err);
+                throw err;
+            }
+        },
+        analyzeResponse: async (responseId: string, responses: any) => {
+            const analyzeFn = httpsCallable(functions, 'analyzeDiscoveryResponse');
+            const result = await analyzeFn({ responseId, responses });
+            return result.data as any;
+        }
+    },
+    actions: {
+        sendSalesAssets: async (opportunityId: string) => {
+            const sendFn = httpsCallable(functions, 'sendSalesAssets');
+            return sendFn({ opportunityId });
         }
     }
 };

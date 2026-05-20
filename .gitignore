@@ -31,3 +31,21 @@ firestore-debug.log
 firebase-debug.log
 ui-debug.log
 emulator-data/
+
+# Scratchpad and backup files
+*.cjs
+test_*.js
+verify_*.js
+find_*.js
+analyze_*.js
+check_*.js
+estimate_*.js
+trigger_*.js
+setup_*.js
+local_*.js
+parse_*.js
+list_*.js
+*.stable_backup
+backfill_*.txt
+models_list.json
+HuskyvoiceAI.txt

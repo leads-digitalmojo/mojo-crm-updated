@@ -13,19 +13,45 @@ import {
   Pie,
   Cell
 } from 'recharts';
-import { TrendingUp, Target, CheckCircle, Loader2, Users, ArrowUpRight, ArrowDownRight, CircleDollarSign } from 'lucide-react';
+import { TrendingUp, Target, CheckCircle, Loader2, Users, ArrowUpRight, ArrowDownRight, CircleDollarSign, Flag } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { isUserAdmin, ADMIN_CONFIG } from '../lib/admin';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '../lib/firebase';
+import toast from 'react-hot-toast';
 
 const Dashboard: React.FC = () => {
   const { dashboardStats, fetchDashboardStats, stages, currentUser } = useStore();
   const [timeRange, setTimeRange] = React.useState('30'); // '30', '7', '1'
+  const [isSendingReport, setIsSendingReport] = React.useState(false);
 
   // Fetch dashboard stats when time range changes
   useEffect(() => {
     fetchDashboardStats(parseInt(timeRange));
   }, [fetchDashboardStats, timeRange]);
+
+  const handleSendRedFlagReport = async () => {
+    if (isSendingReport) return;
+    
+    setIsSendingReport(true);
+    const sendReport = httpsCallable(functions, 'sendRedFlagReport');
+    
+    try {
+      await toast.promise(
+        sendReport(),
+        {
+          loading: 'Generating and sending red flag report...',
+          success: 'Red flag report sent to Dhiraj successfully!',
+          error: (err) => `Failed to send report: ${err.message || 'Unknown error'}`
+        }
+      );
+    } catch (error) {
+      console.error('Error triggering red flag report:', error);
+    } finally {
+      setIsSendingReport(false);
+    }
+  };
 
   // Dashboard stats and stages logic continues below... (Hooks must come first)
 
@@ -61,9 +87,9 @@ const Dashboard: React.FC = () => {
 
   const taskColors = ['#1ea34f', '#eb7311'];
 
-  // Individual Performance Stats
-  const teamMemberStats = React.useMemo(() => {
-    if (!dashboardStats?.allOpportunities) return [];
+  // Individual Performance Stats and Call Aggregates
+  const { teamMemberStats, globalCallStats } = React.useMemo(() => {
+    if (!dashboardStats?.allOpportunities) return { teamMemberStats: [], globalCallStats: { totalDuration: 0, totalCount: 0 } };
 
     const TEAM_MEMBERS = ADMIN_CONFIG.USERS;
     const stagesList = stages || [];
@@ -75,22 +101,35 @@ const Dashboard: React.FC = () => {
       lost: number, 
       open: number,
       value: number,
+      totalCallDuration: number,
+      totalCalls: number,
       stageCounts: Record<string, number>
     }> = {};
     
+    let globalDuration = 0;
+    let globalCount = 0;
+
     // Initialize stats for known team members
     TEAM_MEMBERS.forEach(m => {
-      stats[m.email] = { name: m.name, total: 0, won: 0, lost: 0, open: 0, value: 0, stageCounts: {} };
+      stats[m.email] = { name: m.name, total: 0, won: 0, lost: 0, open: 0, value: 0, totalCallDuration: 0, totalCalls: 0, stageCounts: {} };
     });
 
     (dashboardStats.allOpportunities || []).forEach(opp => {
       if (!opp) return; 
-      const assignee = opp.followUpAssignee || 'Unassigned';
-      const member = TEAM_MEMBERS.find(m => m.id === assignee || m.email === assignee);
-      const key = member ? member.email : 'Unassigned';
+      const assigneeRaw = opp.followUpAssignee || opp.owner || 'Unassigned';
+      
+      // Robust lookup to consolidate multiple identifiers (UIDs, Emails, Names)
+      const member = TEAM_MEMBERS.find(m => 
+        m.id === assigneeRaw || 
+        m.email === assigneeRaw || 
+        m.email.toLowerCase() === assigneeRaw.toLowerCase() ||
+        m.name.toLowerCase() === assigneeRaw.toLowerCase()
+      );
+      
+      const key = member ? member.email : (assigneeRaw === 'Unassigned' ? 'Unassigned' : assigneeRaw);
       
       if (!stats[key]) {
-        stats[key] = { name: key === 'Unassigned' ? 'Unassigned' : (member?.name || key), total: 0, won: 0, lost: 0, open: 0, value: 0, stageCounts: {} };
+        stats[key] = { name: key === 'Unassigned' ? 'Unassigned' : (member?.name || key), total: 0, won: 0, lost: 0, open: 0, value: 0, totalCallDuration: 0, totalCalls: 0, stageCounts: {} };
       }
       
       stats[key].total++;
@@ -109,25 +148,37 @@ const Dashboard: React.FC = () => {
       
       const val = Number(opp.value);
       stats[key].value += isNaN(val) ? 0 : val;
+
+      // Add call stats
+      if (Array.isArray(opp.calls)) {
+        opp.calls.forEach(call => {
+          const dur = (call.duration || 0);
+          stats[key].totalCallDuration += dur;
+          stats[key].totalCalls++;
+          globalDuration += dur;
+          globalCount++;
+        });
+      }
     });
 
-    // Final pass to ensure no NaNs in the results
-  return Object.values(stats).map(entry => {
-    const rate = entry.total > 0 ? (entry.won / entry.total) * 100 : 0;
-    return {
-      ...entry,
-      rate: isNaN(rate) ? 0 : Number(rate.toFixed(1)),
-      value: isNaN(entry.value) ? 0 : entry.value,
-      total: isNaN(entry.total) ? 0 : entry.total,
-      won: isNaN(entry.won) ? 0 : entry.won,
-      lost: isNaN(entry.lost) ? 0 : entry.lost,
-      open: isNaN(entry.open) ? 0 : entry.open
-    };
-  }).sort((a, b) => b.total - a.total);
+    const memberStats = Object.values(stats).map(entry => {
+      const rate = entry.total > 0 ? (entry.won / entry.total) * 100 : 0;
+      return {
+        ...entry,
+        rate: isNaN(rate) ? 0 : Number(rate.toFixed(1)),
+        value: isNaN(entry.value) ? 0 : entry.value,
+        total: isNaN(entry.total) ? 0 : entry.total,
+        won: isNaN(entry.won) ? 0 : entry.won,
+        lost: isNaN(entry.lost) ? 0 : entry.lost,
+        open: isNaN(entry.open) ? 0 : entry.open
+      };
+    }).sort((a, b) => b.total - a.total);
+
+    return { teamMemberStats: memberStats, globalCallStats: { totalDuration: globalDuration, totalCount: globalCount } };
   }, [dashboardStats, stages]);
 
   // Safe Icon Picker
-  const IndianRupeeIcon = (LucideIcons as any).IndianRupee || (LucideIcons as any).Rupee || CircleDollarSign;
+  const IndianRupeeIcon = (LucideIcons as any).IndianRupee || CircleDollarSign;
 
   // Loading state: Wait for both stats and stages to ensure charts have labels
   const isDataReady = !!dashboardStats && stages && stages.length > 0;
@@ -148,7 +199,22 @@ const Dashboard: React.FC = () => {
     <div className="p-4 md:p-8 space-y-6 md:space-y-8 bg-gray-50/50 h-full overflow-y-auto">
       <div className="flex items-center justify-between">
         <h1 className="text-xl md:text-3xl font-bold text-gray-900">Dashboard</h1>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-3">
+          {isUserAdmin(currentUser?.email) && (
+            <button
+              onClick={handleSendRedFlagReport}
+              disabled={isSendingReport}
+              className="flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 border border-red-100 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold"
+              title="Send critical lead stagnation report to Dhiraj"
+            >
+              {isSendingReport ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Flag size={16} />
+              )}
+              <span>Red Flag Report</span>
+            </button>
+          )}
           <select
             value={timeRange}
             onChange={(e) => setTimeRange(e.target.value)}
@@ -163,7 +229,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6">
         {[
           {
             label: 'Opportunities',
@@ -196,6 +262,14 @@ const Dashboard: React.FC = () => {
             icon: CheckCircle,
             color: 'text-brand-green',
             bgColor: 'bg-brand-green/10'
+          },
+          {
+            label: 'Call Analytics',
+            value: `${Math.floor(globalCallStats.totalDuration / 3600)}h ${Math.floor((globalCallStats.totalDuration % 3600) / 60)}m`,
+            subtext: `${globalCallStats.totalCount} calls recorded`,
+            icon: LucideIcons.PhoneIncoming,
+            color: 'text-orange-600',
+            bgColor: 'bg-orange-50'
           },
         ].map((stat, idx) => (
           <div key={idx} className="bg-white rounded-xl p-6 border border-gray-200 shadow-sm flex flex-col justify-between">
@@ -482,11 +556,12 @@ const Dashboard: React.FC = () => {
                   <thead>
                     <tr className="border-b border-gray-100">
                       <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Member</th>
-                      <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center">Total Assigned</th>
+                      <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center">Total</th>
                       <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center">Open</th>
                       <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center text-green-600">Won</th>
                       <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center text-red-500">Lost</th>
                       <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center text-brand-blue">Conversion</th>
+                      <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center text-orange-600">Call Time</th>
                       <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-right">Value</th>
                     </tr>
                   </thead>
@@ -520,7 +595,7 @@ const Dashboard: React.FC = () => {
                             <span className="text-sm font-medium text-gray-700">{user.total}</span>
                           </td>
                           <td className="py-4 px-4 text-center">
-                            <span className="text-sm font-medium text-orange-600 bg-orange-50 px-2 py-1 rounded-full">{user.open}</span>
+                            <span className="text-sm font-medium text-gray-700">{user.open}</span>
                           </td>
                           <td className="py-4 px-4 text-center">
                             <span className="text-sm font-bold text-green-600">{user.won}</span>
@@ -529,18 +604,17 @@ const Dashboard: React.FC = () => {
                             <span className="text-sm font-bold text-red-500">{user.lost}</span>
                           </td>
                           <td className="py-4 px-4 text-center">
-                            <div className="flex flex-col items-center">
-                              <span className="text-sm font-bold text-brand-blue">{convRate}%</span>
-                              <div className="w-16 h-1.5 bg-gray-100 rounded-full mt-1 overflow-hidden">
-                                <div 
-                                  className="h-full bg-brand-blue" 
-                                  style={{ width: `${Math.min(100, parseFloat(convRate))}%` }}
-                                />
-                              </div>
-                            </div>
+                            <div className="text-sm font-bold text-brand-blue">{convRate}%</div>
+                            <div className="text-[10px] text-gray-400 font-medium">{user.won} Won / {user.total} Total</div>
                           </td>
-                          <td className="py-4 px-4 text-right font-bold text-gray-900">
-                            ₹{(user.value || 0).toLocaleString()}
+                          <td className="py-4 px-4 text-center whitespace-nowrap">
+                            <div className="text-sm font-bold text-gray-900">
+                              {Math.floor(user.totalCallDuration / 3600)}h {Math.floor((user.totalCallDuration % 3600) / 60)}m
+                            </div>
+                            <div className="text-[10px] text-gray-400 font-medium">{user.totalCalls} Calls</div>
+                          </td>
+                          <td className="py-4 px-4 text-right text-sm font-bold text-gray-900">
+                            ₹{user.value.toLocaleString()}
                           </td>
                         </tr>
                       );

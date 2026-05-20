@@ -112,7 +112,7 @@ export const mockApi = {
       contacts.forEach(contact => {
         if (ids.includes(contact.id)) {
           const existingTags = (contact as any).tags || [];
-          (contact as any).tags = [...new Set([...existingTags, ...tags])];
+          (contact as any).tags = Array.from(new Set([...existingTags, ...tags]));
         }
       });
       saveStoredData('demo_contacts', contacts);
@@ -469,6 +469,62 @@ export const mockApi = {
       logs.unshift(newLog);
       saveStoredData('demo_login_logs', logs.slice(0, 100)); // Keep last 100
       return newLog;
+    }
+  },
+  settings: {
+    getSalesAssets: async () => {
+      await delay(200);
+      const data = localStorage.getItem('demo_sales_assets');
+      if (data) return JSON.parse(data);
+      return {
+        pdf1Url: '',
+        pdf2Url: '',
+        formUrl: 'https://docs.google.com/forms/d/1oejLDSS_mYJDks3YQVjJSsGmsNc3ofRacpB4dJezYgs/edit'
+      };
+    },
+    updateSalesAssets: async (data: { pdf1Url: string, pdf2Url: string, formUrl: string }) => {
+      await delay(300);
+      localStorage.setItem('demo_sales_assets', JSON.stringify({ ...data, updatedAt: new Date().toISOString() }));
+    }
+  },
+  actions: {
+    sendSalesAssets: async (opportunityId: string) => {
+      await delay(1000);
+      console.log('Mock: Sending sales assets for', opportunityId);
+      return { success: true };
+    }
+  },
+  discovery: {
+    getResponses: async (phone: string) => {
+      await delay(200);
+      const normalized = phone.replace(/\D/g, '').slice(-10);
+      
+      // If searching for the 5th Element lead or similar in demo mode
+      if (normalized === '8904047768') {
+        return [{
+          id: 'mock_discovery_1',
+          phone: normalized,
+          submittedAt: new Date().toISOString(),
+          responses: {
+            'Your Name': 'Shilpa K (Demo)',
+            'Brand Name': '5th Element',
+            'Business Goal': 'Growth 30-50%',
+            'Pain Point': 'Marketing'
+          },
+          createdAt: new Date().toISOString()
+        }];
+      }
+      return [];
+    },
+    analyzeResponse: async (id: string, responses: any) => {
+      await new Promise(r => setTimeout(r, 1000));
+      return {
+        strategy: "Focus on Growth 30-50% targets.",
+        talkingPoints: ["Market leadership", "ROI"],
+        openingScript: "Hello Shilpa, let's talk growth...",
+        hotButtons: ["Scale"],
+        concerns: ["Budget"]
+      };
     }
   }
 };

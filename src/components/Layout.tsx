@@ -15,7 +15,8 @@ import {
   Bell,
   Clock,
   ArrowRight,
-  Activity
+  Activity,
+  ShieldAlert
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import CommandPalette from './CommandPalette';
@@ -125,6 +126,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     if (isUserAdmin(currentUser?.email)) {
       // Insert before Settings
       items.splice(items.length - 1, 0, { path: '/logs', icon: Activity, label: 'Logs' });
+      items.splice(items.length - 1, 0, { path: '/red-flags', icon: ShieldAlert, label: 'Red Flags' });
     }
 
     return items;

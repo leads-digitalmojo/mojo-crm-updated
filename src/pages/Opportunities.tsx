@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import Papa from 'papaparse';
-import { Plus, MoreHorizontal, X, Trash2, LayoutGrid, List as ListIcon, Search, Filter, Download, ChevronDown, User, Phone, Mail, Tag, CheckSquare, MessageSquare, Clock, ArrowUpDown, Calendar, Edit2, Target, BarChart, XCircle, TrendingUp, Users, Save } from 'lucide-react';
+import { Plus, MoreHorizontal, X, Trash2, LayoutGrid, List as ListIcon, Search, Filter, Download, ChevronDown, User, Phone, Mail, Tag, CheckSquare, MessageSquare, Clock, ArrowUpDown, Calendar, Edit2, Target, BarChart, XCircle, TrendingUp, Users, Save, PhoneIncoming, PhoneOutgoing, Timer, RefreshCw, Play, Volume2, Zap, Award, Sparkles } from 'lucide-react';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '../lib/firebase';
 import { useStore } from '../store/useStore';
+import { api } from '../services/api';
 import { DndContext, DragEndEvent, useDraggable, useDroppable } from '@dnd-kit/core';
 import { Modal } from '../components/Modal';
 import { Opportunity, Task, Note, OpportunityActivity, Appointment } from '../types';
@@ -12,22 +15,97 @@ import { format } from 'date-fns';
 import { canEditTask, canDeleteTask, canToggleTaskCompletion } from '../utils/taskPermissions';
 import { isUserAdmin, ADMIN_CONFIG } from '../lib/admin';
 
+const getParsedDate = (val: any) => {
+    if (!val) return 0;
+    // Handle Date objects
+    if (val instanceof Date) return val.getTime();
+    // Handle Firebase Timestamp objects with .toDate() method
+    if (typeof val?.toDate === 'function') return val.toDate().getTime();
+    // Handle plain objects with seconds (from JSON serialization)
+    if (val && typeof val === 'object' && ('seconds' in val || '_seconds' in val)) {
+        return ((val as any).seconds || (val as any)._seconds) * 1000;
+    }
+    // Handle numbers (timestamps)
+    if (typeof val === 'number') return val;
+    // Handle ISO strings or other date strings
+    const d = new Date(val).getTime();
+    return isNaN(d) ? 0 : d;
+};
+
 const safeFormat = (dateInput, formatStr) => {
     try {
         if (!dateInput) return '-';
-        let d;
-        if (typeof dateInput === 'string' || typeof dateInput === 'number') {
-            d = new Date(dateInput);
-        } else if (dateInput && typeof dateInput.toDate === 'function') {
-            d = dateInput.toDate();
-        } else {
-            d = new Date();
-        }
-        if (isNaN(d.getTime())) return '-';
-        return format(d, formatStr);
+        const timestamp = getParsedDate(dateInput);
+        if (timestamp === 0) return '-';
+        return format(new Date(timestamp), formatStr);
     } catch(e) {
         return '-';
     }
+};
+
+/**
+ * IST Helpers for Urgent Lead Staggering
+ */
+const getInIST = (date: Date = new Date()) => {
+    return new Date(date.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+};
+
+const getSessionStart = (date: Date) => {
+    const ist = getInIST(date);
+    const day = ist.getDay(); 
+    const hour = ist.getHours();
+    const min = ist.getMinutes();
+    const timeVal = hour * 100 + min;
+
+    const isWeekend = (day === 0 || day === 6);
+    const isBeforeWork = timeVal < 1000;
+    const isAfterWork = timeVal >= 1930;
+
+    if (!isWeekend && !isBeforeWork && !isAfterWork) return ist;
+
+    let sessionDate = new Date(ist);
+    sessionDate.setHours(10, 0, 0, 0);
+    if (isAfterWork) sessionDate.setDate(sessionDate.getDate() + 1);
+    while (sessionDate.getDay() === 0 || sessionDate.getDay() === 6) {
+        sessionDate.setDate(sessionDate.getDate() + 1);
+    }
+    return sessionDate;
+};
+
+const CountdownTimer = ({ dueDate }: { dueDate: Date }) => {
+    const [timeLeft, setTimeLeft] = useState<number>(0);
+
+    useEffect(() => {
+        const calculate = () => {
+             const now = getInIST();
+             const diff = Math.max(0, Math.floor((dueDate.getTime() - now.getTime()) / 1000));
+             setTimeLeft(diff);
+        };
+        calculate();
+        const interval = setInterval(calculate, 1000);
+        return () => clearInterval(interval);
+    }, [dueDate]);
+
+    if (timeLeft <= 0) {
+        return (
+            <div className="flex items-center gap-1 text-red-600 font-bold animate-pulse text-[10px] bg-red-50 px-1.5 py-0.5 rounded border border-red-100">
+                <Timer size={10} />
+                <span>URGENT</span>
+            </div>
+        );
+    }
+
+    const mins = Math.floor(timeLeft / 60);
+    const secs = timeLeft % 60;
+
+    return (
+        <div className={`flex items-center gap-1 font-mono font-bold text-[10px] px-1.5 py-0.5 rounded border ${
+            timeLeft < 60 ? 'bg-orange-50 text-orange-600 border-orange-100 animate-pulse' : 'bg-blue-50 text-blue-600 border-blue-100'
+        }`}>
+            <Clock size={10} />
+            <span>{String(mins).padStart(2, '0')}:{String(secs).padStart(2, '0')}</span>
+        </div>
+    );
 };
 
 
@@ -37,9 +115,10 @@ interface DraggableCardProps {
     onEdit: (opp: Opportunity) => void;
     onDelete: (id: string) => void;
     nextAppointment?: { date: string; time: string; title: string };
+    effectiveDueDate?: Date;
 }
 
-const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete, nextAppointment }) => {
+const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete, nextAppointment, effectiveDueDate }) => {
     const { stages } = useStore();
     const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
         id: item.id,
@@ -87,18 +166,36 @@ const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete,
                                     {item.status === 'Not Answered' ? 'N/A' : item.status}
                                 </span>
                             )}
+                            {item.aiCallStatus && (
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0 flex items-center gap-1 ${
+                                    item.aiCallStatus === 'Scheduled' ? 'bg-purple-100 text-purple-700' :
+                                    item.aiCallStatus === 'Completed' ? 'bg-teal-100 text-teal-700' :
+                                    item.aiCallStatus === 'Failed' ? 'bg-red-100 text-red-700' :
+                                    'bg-gray-100 text-gray-700'
+                                }`} title="Huskyvoice AI Status">
+                                    {item.aiCallStatus === 'Scheduled' && <Clock size={10} />}
+                                    {item.aiCallStatus === 'Completed' && <Sparkles size={10} />}
+                                    {item.aiCallStatus === 'Failed' && <XCircle size={10} />}
+                                    AI: {item.aiCallStatus}
+                                </span>
+                            )}
                         </div>
-                        {item.contactId && (
-                            <span
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    window.location.hash = `#/contacts/${item.contactId}`;
-                                }}
-                                className="text-xs text-brand-blue hover:underline cursor-pointer flex items-center gap-1 mt-1"
-                            >
-                                <User size={10} /> {item.contactName || 'View Contact'}
-                            </span>
-                        )}
+                        <div className="flex items-center gap-2 mt-1">
+                            {item.contactId && (
+                                <span
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        window.location.hash = `#/contacts/${item.contactId}`;
+                                    }}
+                                    className="text-xs text-brand-blue hover:underline cursor-pointer flex items-center gap-1"
+                                >
+                                    <User size={10} /> {item.contactName || 'View Contact'}
+                                </span>
+                            )}
+                            {effectiveDueDate && !item.urgentAlertSent && (
+                                <CountdownTimer dueDate={effectiveDueDate} />
+                            )}
+                        </div>
                     </div>
                     <div className="flex items-center">
                         <button
@@ -158,6 +255,20 @@ const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete,
                         <div className="flex text-xs">
                             <span className="text-gray-500 w-32 shrink-0">Type:</span>
                             <span className="text-gray-700 font-medium truncate text-brand-blue">{item.opportunityType}</span>
+                        </div>
+                    )}
+
+                    {item.calls && item.calls.length > 0 && (
+                        <div className="flex text-xs">
+                            <span className="text-gray-500 w-32 shrink-0">Voice Calls:</span>
+                            <div className="flex items-center gap-1.5 text-orange-600 font-bold">
+                                <Phone size={10} />
+                                <span>{item.calls.length} calls</span>
+                                <span className="text-gray-400 font-normal">•</span>
+                                <span>
+                                    {Math.floor(item.calls.reduce((acc: number, c: any) => acc + (c.duration || 0), 0) / 60)}m {item.calls.reduce((acc: number, c: any) => acc + (c.duration || 0), 0) % 60}s
+                                </span>
+                            </div>
                         </div>
                     )}
                 </div>
@@ -245,13 +356,52 @@ const DroppableColumn = memo<DroppableColumnProps>(({ stage, items, onEdit, onDe
             </div>
 
             <div ref={scrollContainerRef} className="flex-1 overflow-y-auto custom-scrollbar min-h-[100px] pr-1 pb-2">
-                {items.map(item => {
-                    const apt = appointments
-                        .filter(a => a.contactId === item.contactId && new Date(`${a.date}T${a.time}`) >= new Date())
-                        .sort((a, b) => new Date(`${a.date}T${a.time}`).getTime() - new Date(`${b.date}T${b.time}`).getTime())[0];
+                {(() => {
+                    // Staggering Logic for Stage 16
+                    let sessionPoolCounts: Record<string, number> = {};
+                    
+                    // Sort items by createdAt descending (latest first)
+                    const sortedItems = [...items].sort((a, b) => {
+                        const dateA = getParsedDate(a.createdAt);
+                        const dateB = getParsedDate(b.createdAt);
+                        return dateB - dateA;
+                    });
 
-                    return <DraggableCard key={item.id} item={item} color={stage.color} onEdit={onEdit} onDelete={onDelete} nextAppointment={apt} />;
-                })}
+                    return sortedItems.map(item => {
+                        const apt = appointments
+                            .filter(a => a.contactId === item.contactId && new Date(`${a.date}T${a.time}`) >= new Date())
+                            .sort((a, b) => new Date(`${a.date}T${a.time}`).getTime() - new Date(`${b.date}T${b.time}`).getTime())[0];
+
+                        // Calculate effective date if item is in Stage 16
+                        let effectiveDueDate: Date | undefined;
+                        if (stage.id === '16' && !item.urgentAlertSent) {
+                            const createdAt = new Date(item.createdAt || Date.now());
+                            const sessionStart = getSessionStart(createdAt);
+                            const isPooled = sessionStart.getHours() === 10 && sessionStart.getMinutes() === 0;
+                            
+                            let effectiveStart = sessionStart;
+                            if (isPooled) {
+                                const sKey = sessionStart.toISOString();
+                                const rank = sessionPoolCounts[sKey] || 0;
+                                effectiveStart = new Date(sessionStart.getTime() + rank * 5 * 60 * 1000);
+                                sessionPoolCounts[sKey] = rank + 1;
+                            }
+                            effectiveDueDate = new Date(effectiveStart.getTime() + 5 * 60 * 1000);
+                        }
+
+                        return (
+                            <DraggableCard 
+                                key={item.id} 
+                                item={item} 
+                                color={stage.color} 
+                                onEdit={onEdit} 
+                                onDelete={onDelete} 
+                                nextAppointment={apt}
+                                effectiveDueDate={effectiveDueDate} 
+                            />
+                        );
+                    });
+                })()}
                 {/* Sentinel element for infinite scroll */}
                 <div ref={loadMoreRef} className="h-4">
                     {isLoading && hasMore && (
@@ -285,7 +435,19 @@ const AnalyticsDashboard = ({ opportunities, stages }: { opportunities: Opportun
 
         (opportunities || []).forEach(opp => {
             if (!opp) return; // Guard against null/undefined in array
-            const assignee = (opp.followUpAssignee || '').toLowerCase();
+            
+            const assigneeRawValue = (opp.followUpAssignee || opp.owner || '').trim().toLowerCase();
+            if (!assigneeRawValue) return;
+
+            // Resolve to formal email if it matches name, id, or email in whitelist
+            const userMatch = ADMIN_CONFIG.USERS.find(u => 
+                u.email.toLowerCase() === assigneeRawValue || 
+                u.name.toLowerCase() === assigneeRawValue || 
+                (u.id && u.id.toLowerCase() === assigneeRawValue)
+            );
+            
+            const assignee = userMatch ? userMatch.email.toLowerCase() : assigneeRawValue;
+
             if (teamStats[assignee]) {
                 teamStats[assignee].total++;
                 teamStats[assignee].value += (Number(opp.value) || 0);
@@ -300,8 +462,8 @@ const AnalyticsDashboard = ({ opportunities, stages }: { opportunities: Opportun
                 } else {
                     teamStats[assignee].inProgress++;
                 }
-            } else if (assignee) {
-                // If assignee exists but not in whitelist, track them anyway to avoid data loss
+            } else {
+                // If assignee doesn't exist in whitelist, track them anyway to avoid data loss
                 if (!teamStats[assignee]) {
                     teamStats[assignee] = { name: assignee, total: 0, won: 0, lost: 0, inProgress: 0, value: 0 };
                 }
@@ -422,14 +584,14 @@ const AnalyticsDashboard = ({ opportunities, stages }: { opportunities: Opportun
 };
 
 const Opportunities: React.FC = () => {
-    const { opportunities, appointments, stages, stageCounts, stagePagination, fetchOpportunities, fetchOpportunitiesByStage, loadMoreByStage, fetchStageCounts, updateOpportunity, addOpportunity, deleteOpportunity, bulkDeleteOpportunities, updateStages, currentUser, addAppointment, fetchAppointments, contacts, fetchContacts, addContact, updateContact, deleteContact, hasMoreOpportunities, loadMoreOpportunities, isLoading } = useStore();
+    const { opportunities, appointments, stages, stageCounts, stagePagination, fetchOpportunities, fetchOpportunitiesByStage, loadMoreByStage, fetchStageCounts, updateOpportunity, addOpportunity, deleteOpportunity, bulkDeleteOpportunities, updateStages, currentUser, addAppointment, fetchAppointments, contacts, fetchContacts, addContact, updateContact, deleteContact, hasMoreOpportunities, loadMoreOpportunities, isLoading, discoveryResponses, fetchDiscoveryResponses } = useStore();
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isPipelineModalOpen, setIsPipelineModalOpen] = useState(false);
     const [viewMode, setViewMode] = useState<'board' | 'list' | 'analytics'>('board');
     const [editingId, setEditingId] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState('Contact Info');
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-    const [leadFilter, setLeadFilter] = useState<'all' | 'assigned'>('all');
+    const [leadFilter, setLeadFilter] = useState<'all' | 'assigned' | 'unassigned'>('all');
 
     // Form State
     const [formData, setFormData] = useState({
@@ -449,7 +611,8 @@ const Opportunities: React.FC = () => {
         contactValue: 'Standard',
         followUpDate: '',
         opportunityType: '',
-        followUpAssignee: ''
+        followUpAssignee: '',
+        secondaryPhones: [] as string[]
     });
 
     // Sub-items State
@@ -466,6 +629,96 @@ const Opportunities: React.FC = () => {
     const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
     const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
     const [isAddingNote, setIsAddingNote] = useState(false);
+    const [isSyncingSalestrail, setIsSyncingSalestrail] = useState(false);
+    const [isSendingAssets, setIsSendingAssets] = useState(false);
+
+    useEffect(() => {
+        if (activeTab === 'discovery' && formData.contactPhone) {
+            fetchDiscoveryResponses(formData.contactPhone);
+        }
+    }, [activeTab, formData.contactPhone, fetchDiscoveryResponses]);
+
+    const handleSalestrailSync = async () => {
+        if (isSyncingSalestrail) return;
+        
+        setIsSyncingSalestrail(true);
+        const syncToast = toast.loading('Syncing Salestrail calls... (this may take a few minutes)');
+        
+        try {
+            const manualSync = httpsCallable(functions, 'manualSalestrailSync');
+            const result: any = await manualSync();
+            
+            if (result.data?.success) {
+                const { matches, updated, analyzed } = result.data;
+                let msg = `Sync complete! ${matches} matches, ${updated} leads updated.`;
+                if (analyzed > 0) msg += ` AI analyzed ${analyzed} calls.`;
+                toast.success(msg, { id: syncToast, duration: 6000 });
+                // Refresh data
+                fetchOpportunities();
+            } else {
+                toast.error(`Sync failed: ${result.data?.error || 'Unknown error'}`, { id: syncToast });
+            }
+        } catch (error: any) {
+            console.error('Salestrail Sync Error:', error);
+            toast.error(`Sync error: ${error.message}`, { id: syncToast });
+        } finally {
+            setIsSyncingSalestrail(false);
+        }
+    };
+
+    const currentStageObj = stages.find(s => String(s.id) === String(formData.stage));
+    const currentStageId = String(formData.stage || '').trim();
+    const currentStageTitle = (currentStageObj?.title || '').toLowerCase();
+    
+    const isYetToContactUI = currentStageId === '16' || currentStageTitle.includes('yet to contact');
+    const isJunkOrNoBudgetUI = 
+        currentStageId === '0' || 
+        currentStageId === '0.5' || 
+        currentStageTitle.includes('junk') || 
+        currentStageTitle.includes('no budget');
+
+    const handleSendSalesAssets = async () => {
+        if (!editingId) return;
+
+        if (isSendingAssets) return;
+
+        setIsSendingAssets(true);
+        const toastId = toast.loading('Sending sales assets sequence...');
+
+        try {
+            const { sendSalesAssets } = useStore.getState();
+            await sendSalesAssets(editingId);
+            toast.success('Sales assets sequence triggered successfully!', { id: toastId });
+        } catch (error: any) {
+            console.error('Failed to send sales assets:', error);
+            toast.error(error.message || 'Failed to send sales assets', { id: toastId });
+        } finally {
+            setIsSendingAssets(false);
+        }
+    };
+
+    const [isAnalyzingDiscovery, setIsAnalyzingDiscovery] = useState<Record<string, boolean>>({});
+
+    const handleAnalyzeDiscovery = async (response: any) => {
+        if (isAnalyzingDiscovery[response.id]) return;
+
+        setIsAnalyzingDiscovery(prev => ({ ...prev, [response.id]: true }));
+        const toastId = toast.loading('AI is analyzing lead potential...');
+
+        try {
+            await api.discovery.analyzeResponse(response.id, response.responses);
+            toast.success('Analysis complete!', { id: toastId });
+            // Refresh to get the analysis from Firestore
+            if (formData.contactPhone) {
+                fetchDiscoveryResponses(formData.contactPhone);
+            }
+        } catch (error: any) {
+            console.error('AI Analysis Error:', error);
+            toast.error(error.message || 'AI Analysis failed', { id: toastId });
+        } finally {
+            setIsAnalyzingDiscovery(prev => ({ ...prev, [response.id]: false }));
+        }
+    };
 
     const TEAM_MEMBERS = ADMIN_CONFIG.USERS;
 
@@ -586,10 +839,12 @@ const Opportunities: React.FC = () => {
         };
     }, [viewMode, hasMoreOpportunities, loadMoreOpportunities, isLoading]);
 
+    // getParsedDate is now defined at the top level
+
     const sortOpps = (a: Opportunity, b: Opportunity) => {
         if (sortBy === 'none') {
-            const dateA = new Date(a.createdAt || 0).getTime();
-            const dateB = new Date(b.createdAt || 0).getTime();
+            const dateA = getParsedDate(a.createdAt);
+            const dateB = getParsedDate(b.createdAt);
             return dateB - dateA;
         }
         if (sortBy === 'stage') {
@@ -601,8 +856,8 @@ const Opportunities: React.FC = () => {
                 return sortOrder === 'asc' ? rankA - rankB : rankB - rankA;
             }
             // Keep opportunities inside same stage sorted by date descending
-            const dateA = new Date(a.createdAt || 0).getTime();
-            const dateB = new Date(b.createdAt || 0).getTime();
+            const dateA = getParsedDate(a.createdAt);
+            const dateB = getParsedDate(b.createdAt);
             return dateB - dateA;
         } else if (sortBy === 'followUp') {
             const now = new Date();
@@ -634,12 +889,10 @@ const Opportunities: React.FC = () => {
                 return sortOrder === 'asc' ? dateA - dateB : dateB - dateA;
             }
             // Fallback to createdAt
-            // Force cache bust
-            console.log('Opportunities Tab Mounted - Build v3');
-            return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+            return getParsedDate(b.createdAt) - getParsedDate(a.createdAt);
         } else {
-            const dateA = new Date(a.createdAt || 0).getTime();
-            const dateB = new Date(b.createdAt || 0).getTime();
+            const dateA = getParsedDate(a.createdAt);
+            const dateB = getParsedDate(b.createdAt);
             return sortOrder === 'asc' ? dateA - dateB : dateB - dateA;
         }
     };
@@ -680,10 +933,12 @@ const Opportunities: React.FC = () => {
                 }
             }
             const matchesMonth = filters.selectedMonth ? (createdAtStr.startsWith(filters.selectedMonth)) : true;
-            // Assigned Leads Filter
+            // Lead Filter Logic
             const matchesLeadFilter = leadFilter === 'assigned'
                 ? (opp.followUpAssignee === currentUser?.id || opp.followUpAssignee === currentUser?.email)
-                : true;
+                : leadFilter === 'unassigned'
+                    ? (!opp.owner || opp.owner.trim() === '') && (!opp.followUpAssignee || opp.followUpAssignee.trim() === '')
+                    : true;
 
             return matchesSearch && matchesStage && matchesStatus && matchesType && matchesMonth && matchesLeadFilter;
         }).sort(sortOpps);
@@ -704,18 +959,34 @@ const Opportunities: React.FC = () => {
         // If dropped over a container (stage)
         if (stages.some(s => s.id === overId)) {
             if (opportunity.stage !== overId) {
-                const updates: any = { stage: overId };
-
-                // Auto-update status if moved to 'Closed' stage
-                if (overId === '10') {
-                    updates.status = 'Won';
-                } else if (opportunity.stage === '10' && overId !== '10') {
-                    // Reset to Open if moved OUT of Closed stage
-                    updates.status = 'Open';
+                // Special case: Junk and No Budget moves are allowed without a note via drag-and-drop
+                if (overId === '0' || overId === '0.5') {
+                    try {
+                        const stageTitle = overId === '0' ? 'Junk' : 'No Budget';
+                        await updateOpportunity(activeId, { 
+                            stage: overId,
+                            followUpDate: '' // Clear follow-up date
+                        });
+                        toast.success(`Lead moved to ${stageTitle}`);
+                        return;
+                    } catch (error) {
+                        toast.error(`Failed to move lead`);
+                        return;
+                    }
                 }
 
-                await updateOpportunity(activeId, updates);
-                toast.success('Opportunity moved');
+                // NEW ENFORCEMENT: Any other stage change requires a note.
+                // Since drag-and-drop doesn't allow adding a note, we force the modal open.
+                const destId = String(overId);
+                const destStage = stages.find(s => String(s.id) === destId);
+                const destTitle = (destStage?.title || '').toLowerCase();
+                const isDestExempt = destId === '0' || destId === '0.5' || destTitle.includes('junk') || destTitle.includes('no budget');
+
+                if (!isDestExempt) {
+                    toast.error("Stage change requires a new note. Please update via the modal.");
+                    handleOpenModal(opportunity, overId);
+                    return;
+                }
             }
         }
     };
@@ -750,19 +1021,32 @@ const Opportunities: React.FC = () => {
         }
     };
 
-    const handleOpenModal = (opp?: Opportunity) => {
+    const handleOpenModal = (opp?: Opportunity, targetStage?: string) => {
         if (opp) {
             setEditingId(opp.id);
             const linkedContact = contacts.find(c => c.id === (opp.contactId || ''));
 
             // Safety check for value
             const oppValue = opp.value !== undefined && opp.value !== null ? opp.value.toString() : "0";
+            // Auto-update status if moved to 'Closed' (Won) stage (Stage ID '10')
+            let initialStatus = opp.status || 'Open';
+            if (targetStage === '10') {
+                initialStatus = 'Won';
+            } else if (String(opp.stage) === '10' && targetStage && String(targetStage) !== '10') {
+                initialStatus = 'Open';
+            }
+
+            const tStage = String(targetStage || '');
+            const targetStageObj = stages.find(s => String(s.id) === tStage);
+            const targetTitle = (targetStageObj?.title || '').toLowerCase();
+            const isTargetExempt = tStage === '0' || tStage === '0.5' || targetTitle.includes('junk') || targetTitle.includes('no budget');
+            const isActuallyChanging = targetStage && String(targetStage) !== String(opp.stage);
 
             setFormData({
                 name: opp.name || '',
                 value: oppValue,
-                stage: opp.stage || '16',
-                status: opp.status || 'Open',
+                stage: targetStage || opp.stage || '16',
+                status: initialStatus,
                 source: opp.source || '',
                 contactName: linkedContact?.name || opp.contactName || '',
                 contactEmail: linkedContact?.email || opp.contactEmail || '',
@@ -773,9 +1057,10 @@ const Opportunities: React.FC = () => {
                 tags: Array.isArray(opp.tags) ? opp.tags.join(', ') : '',
                 calendar: opp.calendar || '',
                 contactValue: linkedContact?.Value || 'Standard',
-                followUpDate: opp.followUpDate || '',
+                followUpDate: (isActuallyChanging && !isTargetExempt) ? '' : (opp.followUpDate || ''),
                 opportunityType: opp.opportunityType || '',
-                followUpAssignee: opp.followUpAssignee || ''
+                followUpAssignee: opp.followUpAssignee || '',
+                secondaryPhones: opp.secondaryPhones || []
             });
             setTasks(Array.isArray(opp.tasks) ? opp.tasks : []);
             setNotes(Array.isArray(opp.notes) ? opp.notes : []);
@@ -789,7 +1074,7 @@ const Opportunities: React.FC = () => {
                 contactName: '', contactEmail: '', contactPhone: '', companyName: '',
                 your_website: '', budget: '',
                 tags: '', calendar: '', contactValue: 'Standard', followUpDate: '',
-                opportunityType: '', followUpAssignee: ''
+                opportunityType: '', followUpAssignee: '', secondaryPhones: []
             });
             setTasks([]);
             setNotes([]);
@@ -802,15 +1087,81 @@ const Opportunities: React.FC = () => {
     const [isSubmitting, setIsSubmitting] = useState(false);
 
     const handleSubmit = async () => {
-        if (!formData.name) {
-            toast.error('Opportunity Name is required');
+        if (!formData.contactName) {
+            toast.error('Contact Name is required');
+            setActiveTab('details');
             return;
+        }
+
+        if (!formData.contactPhone) {
+            toast.error('Contact Phone Number is required');
+            setActiveTab('details');
+            return;
+        }
+
+        const currentStage = stages.find(s => String(s.id) === String(formData.stage));
+        const stageId = String(formData.stage || '').trim();
+        const stageTitle = (currentStage?.title || '').toLowerCase();
+        
+        const isJunkOrNoBudget = 
+            stageId === '0' || 
+            stageId === '0.5' || 
+            stageTitle.includes('junk') || 
+            stageTitle.includes('no budget');
+            
+        const isYetToContact = 
+            stageId === '16' || 
+            stageTitle.includes('yet to contact');
+
+        if (!formData.followUpAssignee && !isJunkOrNoBudget) {
+            toast.error('Follow-up Assignee is required');
+            setActiveTab('details');
+            return;
+        }
+
+        const existingOpp = editingId ? opportunities.find(o => o.id === editingId) : null;
+        const isStageChanging = existingOpp && String(formData.stage) !== String(existingOpp.stage);
+
+        // 1. VALIDATION: If stage is not "Yet to contact" (16), "Junk" (0), or "No Budget" (0.5), require Source, Notes, and Follow-up Date
+        if (formData.stage && !isYetToContact && !isJunkOrNoBudget) {
+            const missing = [];
+            if (!formData.source) missing.push('Opportunity Source');
+            if (!formData.followUpDate) missing.push('Follow-up Date');
+            if (!notes || notes.length === 0) missing.push('at least one Note');
+
+            if (missing.length > 0) {
+                toast.error(`Required for this stage: ${missing.join(', ')}`);
+                if (missing.some(m => m !== 'at least one Note')) {
+                    setActiveTab('details');
+                } else {
+                    setActiveTab('notes');
+                }
+                return;
+            }
+        }
+
+        // 2. NEW ENFORCEMENT: Any stage change requires a NEW note and a follow-up date (EXCEPT for Junk and No Budget)
+        if (isStageChanging && !isJunkOrNoBudget) {
+            if (!formData.followUpDate) {
+                toast.error('Follow-up Date is required for stage change');
+                setActiveTab('details');
+                return;
+            }
+            const hasNewNote = notes.some(note => !existingOpp?.notes?.some(oldNote => oldNote.id === note.id));
+            if (!hasNewNote) {
+                toast.error('A new note is required for any stage change');
+                setActiveTab('notes');
+                return;
+            }
         }
 
         if (isSubmitting) return;
         setIsSubmitting(true);
 
-        let finalContactId = editingId ? opportunities.find(o => o.id === editingId)?.contactId : undefined;
+        let finalContactId = existingOpp?.contactId;
+
+        // Detect if assignee changed to trigger a new notification
+        const isNewAssignment = !editingId || (existingOpp && existingOpp.followUpAssignee !== formData.followUpAssignee);
 
         // Logic to link/create contact
         if (formData.contactName) {
@@ -874,9 +1225,12 @@ const Opportunities: React.FC = () => {
             followUpDate: formData.followUpDate || '',
             opportunityType: formData.opportunityType || '',
             followUpAssignee: formData.followUpAssignee || '',
+            owner: formData.followUpAssignee || existingOpp?.owner || '', // Sync owner with follow-up assignee
+            assignmentNotified: isNewAssignment ? false : (existingOpp?.assignmentNotified ?? false),
             updatedAt: new Date().toISOString(),
             tasks: tasks || [],
-            notes: notes || []
+            notes: notes || [],
+            secondaryPhones: formData.secondaryPhones || []
         };
 
         try {
@@ -1268,6 +1622,15 @@ const Opportunities: React.FC = () => {
                             <Download size={16} /> Export ({visibleOpportunities.length})
                         </button>
                         <button
+                            onClick={handleSalestrailSync}
+                            disabled={isSyncingSalestrail}
+                            className={`px-3 md:px-4 py-2 ${isSyncingSalestrail ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-brand-blue text-white hover:bg-brand-blue/90'} rounded-lg text-sm font-bold shadow-sm flex items-center gap-2`}
+                        >
+                            <RefreshCw size={18} className={isSyncingSalestrail ? 'animate-spin' : ''} />
+                            <span className="hidden md:inline">{isSyncingSalestrail ? 'Syncing...' : 'Sync Salestrail'}</span>
+                            <span className="md:hidden">Sync</span>
+                        </button>
+                        <button
                             onClick={() => handleOpenModal()}
                             className="px-3 md:px-4 py-2 bg-brand-orange text-white rounded-lg text-sm font-bold hover:bg-brand-orange/90 shadow-sm flex items-center gap-2"
                         >
@@ -1312,6 +1675,12 @@ const Opportunities: React.FC = () => {
                             className={`px-3 py-1.5 rounded-md text-xs md:text-sm font-bold transition-all ${leadFilter === 'assigned' ? 'bg-brand-blue text-white shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
                         >
                             Assigned to Me
+                        </button>
+                        <button
+                            onClick={() => setLeadFilter('unassigned')}
+                            className={`px-3 py-1.5 rounded-md text-xs md:text-sm font-bold transition-all ${leadFilter === 'unassigned' ? 'bg-brand-blue text-white shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                        >
+                            Unassigned
                         </button>
                     </div>
 
@@ -1503,6 +1872,8 @@ const Opportunities: React.FC = () => {
                                     >
                                         <option value="">All Types</option>
                                         <option value="Real Estate">Real Estate</option>
+                                        <option value="adcalculator">Ad Calculator</option>
+                                        <option value="Meta Ads">Meta Ads</option>
                                         <option value="Others">Others</option>
                                     </select>
                                 </div>
@@ -1601,6 +1972,7 @@ const Opportunities: React.FC = () => {
                                         <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200">Next Follow up Date</th>
                                         <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200">Source</th>
                                         <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200">Stage</th>
+                                        <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200">Calls</th>
                                         <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200">Value</th>
                                         <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200">Email</th>
                                         <th className="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200">Status</th>
@@ -1663,6 +2035,14 @@ const Opportunities: React.FC = () => {
                                                 <span className="px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs font-medium border border-gray-200">
                                                     {stages.find(s => s.id === opp.stage)?.title || opp.stage}
                                                 </span>
+                                            </td>
+                                            <td className="p-4">
+                                                {opp.calls && opp.calls.length > 0 ? (
+                                                    <div className="flex items-center gap-1 text-orange-600 font-bold text-xs">
+                                                        <Phone size={12} />
+                                                        <span>{opp.calls.length}</span>
+                                                    </div>
+                                                ) : <span className="text-gray-300">-</span>}
                                             </td>
                                             <td className="p-4 text-sm text-gray-700">₹{Number(opp.value).toLocaleString()}</td>
                                             <td className="p-4 text-sm text-gray-600">{opp.contactEmail || '-'}</td>
@@ -1787,7 +2167,10 @@ const Opportunities: React.FC = () => {
                                             { label: 'Details', id: 'details' },
                                             { label: 'Booking', id: 'book-update-appointment' },
                                             { label: 'Tasks', id: 'tasks' },
-                                            { label: 'Notes', id: 'notes' }
+                                            { label: 'Notes', id: 'notes' },
+                                            { label: 'Calls', id: 'calls' },
+                                            { label: 'Discovery Form', id: 'discovery' },
+                                            { label: 'Voice Agent Input', id: 'voice-agent' }
                                         ];
                                         if (isUserAdmin(currentUser?.email)) {
                                             tabs.push({ label: 'Leads Movement', id: 'activity' });
@@ -1819,17 +2202,42 @@ const Opportunities: React.FC = () => {
                                                         <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
                                                             Contact details <User size={18} className="text-gray-400" />
                                                         </h3>
+                                                        {editingId && (() => {
+                                                            const currentOpp = opportunities.find(o => o.id === editingId);
+                                                            return (
+                                                                <div className="flex flex-col items-end">
+                                                                    <button
+                                                                        onClick={handleSendSalesAssets}
+                                                                        disabled={isSendingAssets}
+                                                                        className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 shadow-sm transition-all disabled:opacity-50"
+                                                                    >
+                                                                        <Zap size={14} className={isSendingAssets ? 'animate-pulse' : ''} />
+                                                                        {isSendingAssets ? 'Sending Assets...' : 'Send Sales Assets'}
+                                                                    </button>
+                                                                    {currentOpp?.lastSalesAssetsSent && (
+                                                                        <span className="text-[10px] text-gray-500 mt-1 font-medium">
+                                                                            Last sent: {safeFormat(currentOpp.lastSalesAssetsSent, 'MMM d, h:mm a')}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            );
+                                                        })()}
                                                     </div>
                                                     <div className="space-y-4 md:space-y-6">
                                                         <div className="relative">
-                                                            <User className="absolute left-3 top-2.5 text-gray-400 h-5 w-5" />
-                                                            <input
-                                                                type="text"
-                                                                placeholder="Contact Name"
-                                                                value={formData.contactName}
-                                                                onChange={e => setFormData({ ...formData, contactName: e.target.value })}
-                                                                className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
-                                                            />
+                                                            <div className="flex justify-between items-center mb-1">
+                                                                <span className="text-xs font-medium text-gray-500">Contact Name <span className="text-red-500">*</span></span>
+                                                            </div>
+                                                            <div className="relative">
+                                                                <User className="absolute left-3 top-2.5 text-gray-400 h-5 w-5" />
+                                                                <input
+                                                                    type="text"
+                                                                    placeholder="Contact Name *"
+                                                                    value={formData.contactName}
+                                                                    onChange={e => setFormData({ ...formData, contactName: e.target.value })}
+                                                                    className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
+                                                                />
+                                                            </div>
                                                         </div>
                                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-6">
                                                             <div className="relative">
@@ -1843,14 +2251,62 @@ const Opportunities: React.FC = () => {
                                                                 />
                                                             </div>
                                                             <div className="relative">
-                                                                <Phone className="absolute left-3 top-2.5 text-gray-400 h-5 w-5" />
-                                                                <input
-                                                                    type="tel"
-                                                                    placeholder="Phone Number"
-                                                                    value={formData.contactPhone}
-                                                                    onChange={e => setFormData({ ...formData, contactPhone: e.target.value })}
-                                                                    className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
-                                                                />
+                                                                <div className="flex justify-between items-center mb-1">
+                                                                    <span className="text-xs font-medium text-gray-500">Phone Number <span className="text-red-500">*</span></span>
+                                                                </div>
+                                                                <div className="relative">
+                                                                    <Phone className="absolute left-3 top-2.5 text-gray-400 h-5 w-5" />
+                                                                    <input
+                                                                        type="tel"
+                                                                        placeholder="Phone Number *"
+                                                                        value={formData.contactPhone}
+                                                                        onChange={e => {
+                                                                            const val = e.target.value.replace(/\D/g, '');
+                                                                            setFormData({ ...formData, contactPhone: val });
+                                                                        }}
+                                                                        className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
+                                                                    />
+                                                                </div>
+                                                                
+                                                                {/* Secondary Phone Numbers */}
+                                                                {formData.secondaryPhones?.map((phone, index) => (
+                                                                    <div key={index} className="relative mt-2 animate-in fade-in slide-in-from-top-1">
+                                                                        <div className="flex justify-between items-center mb-1">
+                                                                            <span className="text-[10px] font-medium text-gray-500">Alternative Phone {index + 1}</span>
+                                                                            <button 
+                                                                                onClick={() => {
+                                                                                    const newPhones = [...formData.secondaryPhones];
+                                                                                    newPhones.splice(index, 1);
+                                                                                    setFormData({ ...formData, secondaryPhones: newPhones });
+                                                                                }}
+                                                                                className="text-red-400 hover:text-red-600 transition-colors"
+                                                                                title="Remove number"
+                                                                            >
+                                                                                <Trash2 size={12} />
+                                                                            </button>
+                                                                        </div>
+                                                                        <div className="relative">
+                                                                            <Phone className="absolute left-3 top-2 text-gray-400 h-4 w-4" />
+                                                                            <input
+                                                                                type="tel"
+                                                                                placeholder="Alternative Phone"
+                                                                                value={phone}
+                                                                                onChange={e => {
+                                                                                    const newPhones = [...formData.secondaryPhones];
+                                                                                    newPhones[index] = e.target.value.replace(/\D/g, '');
+                                                                                    setFormData({ ...formData, secondaryPhones: newPhones });
+                                                                                }}
+                                                                                className="w-full pl-9 p-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
+                                                                            />
+                                                                        </div>
+                                                                    </div>
+                                                                ))}
+                                                                <button
+                                                                    onClick={() => setFormData({ ...formData, secondaryPhones: [...(formData.secondaryPhones || []), ''] })}
+                                                                    className="mt-2 text-[11px] text-brand-blue font-semibold flex items-center gap-1 hover:underline active:scale-95 transition-transform"
+                                                                >
+                                                                    <Plus size={14} /> Add Alternative Number
+                                                                </button>
                                                             </div>
                                                         </div>
                                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-6">
@@ -1887,7 +2343,7 @@ const Opportunities: React.FC = () => {
                                                     <h3 className="text-lg font-bold text-gray-900 mb-4">Opportunity Details</h3>
                                                     <div className="space-y-6">
                                                         <div>
-                                                            <label className="block mb-1.5 text-sm font-medium text-gray-700">Opportunity Name <span className="text-red-500">*</span></label>
+                                                            <label className="block mb-1.5 text-sm font-medium text-gray-700">Opportunity Name</label>
                                                             <input
                                                                 type="text"
                                                                 value={formData.name}
@@ -1901,7 +2357,16 @@ const Opportunities: React.FC = () => {
                                                                 <label className="block mb-1.5 text-sm font-medium text-gray-700">Stage</label>
                                                                 <select
                                                                     value={formData.stage}
-                                                                    onChange={e => setFormData({ ...formData, stage: e.target.value })}
+                                                                    onChange={e => {
+                                                                        const newStage = e.target.value;
+                                                                        let newStatus = formData.status;
+                                                                        if (newStage === '10') {
+                                                                            newStatus = 'Won';
+                                                                        } else if (formData.stage === '10' && newStage !== '10') {
+                                                                            newStatus = 'Open';
+                                                                        }
+                                                                        setFormData({ ...formData, stage: newStage, status: newStatus, followUpDate: '' });
+                                                                    }}
                                                                     className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
                                                                 >
                                                                     {stages.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
@@ -1959,6 +2424,8 @@ const Opportunities: React.FC = () => {
                                                             >
                                                                 <option value="">Select Type</option>
                                                                 <option value="Real Estate">Real Estate</option>
+                                                                <option value="adcalculator">Ad Calculator</option>
+                                                                <option value="Meta Ads">Meta Ads</option>
                                                                 <option value="Others">Others</option>
                                                             </select>
                                                         </div>
@@ -2043,7 +2510,7 @@ const Opportunities: React.FC = () => {
                                                         </div>
                                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                                             <div>
-                                                                <label className="block mb-2 text-sm font-medium text-gray-700">Follow up Date</label>
+                                                                <label className="block mb-2 text-sm font-medium text-gray-700">Follow up Date {(!isYetToContactUI && !isJunkOrNoBudgetUI) && <span className="text-red-500">*</span>}</label>
                                                                 <div className="relative">
                                                                     <Calendar size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                                                                     <input
@@ -2058,7 +2525,7 @@ const Opportunities: React.FC = () => {
                                                             </div>
 
                                                             <div>
-                                                                <label className="block mb-2 text-sm font-medium text-gray-700">Follow up Assignee</label>
+                                                                <label className="block mb-2 text-sm font-medium text-gray-700">Follow up Assignee {(!isYetToContactUI && !isJunkOrNoBudgetUI) && <span className="text-red-500">*</span>}</label>
                                                                 <select
                                                                     value={formData.followUpAssignee}
                                                                     onChange={e => setFormData({ ...formData, followUpAssignee: e.target.value })}
@@ -2077,7 +2544,229 @@ const Opportunities: React.FC = () => {
                                             </>
                                         )}
 
+                                        {/* VOICE AGENT TAB */}
+                                        {activeTab === 'voice-agent' && (
+                                            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                                                <div className="flex justify-between items-center">
+                                                    <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                                                        Voice Agent Input <Sparkles size={18} className="text-brand-blue" />
+                                                    </h3>
+                                                </div>
+
+                                                {(() => {
+                                                    const currentOpp = opportunities.find(o => o.id === editingId);
+                                                    if (!currentOpp) return null;
+
+                                                    return (
+                                                        <div className="space-y-6">
+                                                            <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 grid grid-cols-1 md:grid-cols-3 gap-4">
+                                                                <div>
+                                                                    <div className="text-xs text-gray-500 mb-1">Status</div>
+                                                                    <div className="font-bold text-gray-900 flex items-center gap-2">
+                                                                        {currentOpp.aiCallStatus || 'Not Initiated'}
+                                                                        {currentOpp.isAIPending && <span className="px-2 py-0.5 bg-yellow-100 text-yellow-700 text-[10px] rounded uppercase">Pending</span>}
+                                                                    </div>
+                                                                </div>
+                                                                <div>
+                                                                    <div className="text-xs text-gray-500 mb-1">Duration</div>
+                                                                    <div className="font-bold text-gray-900">
+                                                                        {currentOpp.aiCallDuration ? `${Math.floor(currentOpp.aiCallDuration / 60)}m ${currentOpp.aiCallDuration % 60}s` : '-'}
+                                                                    </div>
+                                                                </div>
+                                                                <div>
+                                                                    <div className="text-xs text-gray-500 mb-1">Call ID</div>
+                                                                    <div className="text-sm text-gray-900 font-mono truncate" title={currentOpp.aiCallId || ''}>
+                                                                        {currentOpp.aiCallId || '-'}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+
+                                                            {currentOpp.aiSummary && (
+                                                                <div className="bg-blue-50 border border-blue-100 p-4 rounded-xl">
+                                                                    <h4 className="font-bold text-blue-900 flex items-center gap-2 mb-2">
+                                                                        <Target size={16} /> Call Summary
+                                                                    </h4>
+                                                                    <p className="text-sm text-blue-800 leading-relaxed">
+                                                                        {currentOpp.aiSummary}
+                                                                    </p>
+                                                                </div>
+                                                            )}
+
+                                                            {currentOpp.aiSuggestions && currentOpp.aiSuggestions.length > 0 && (
+                                                                <div className="bg-purple-50 border border-purple-100 p-4 rounded-xl">
+                                                                    <h4 className="font-bold text-purple-900 flex items-center gap-2 mb-3">
+                                                                        <Sparkles size={16} /> AI Suggestions for Sales Agent
+                                                                    </h4>
+                                                                    <ul className="space-y-2">
+                                                                        {currentOpp.aiSuggestions.map((suggestion: string, idx: number) => (
+                                                                            <li key={idx} className="flex gap-2 text-sm text-purple-800">
+                                                                                <span className="text-purple-400 mt-0.5">•</span>
+                                                                                <span>{suggestion}</span>
+                                                                            </li>
+                                                                        ))}
+                                                                    </ul>
+                                                                </div>
+                                                            )}
+
+                                                            {currentOpp.aiTranscript && (
+                                                                <div className="bg-white border border-gray-200 p-4 rounded-xl shadow-sm">
+                                                                    <h4 className="font-bold text-gray-900 flex items-center gap-2 mb-3">
+                                                                        <MessageSquare size={16} className="text-gray-400" /> Full Transcript
+                                                                    </h4>
+                                                                    <div className="bg-gray-50 rounded-lg p-4 max-h-96 overflow-y-auto whitespace-pre-wrap text-sm text-gray-700 font-mono custom-scrollbar">
+                                                                        {currentOpp.aiTranscript}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+
+                                                            {!currentOpp.aiCallId && (
+                                                                <div className="text-center py-10 bg-gray-50 rounded-xl border border-gray-200 border-dashed">
+                                                                    <PhoneOutgoing size={32} className="mx-auto text-gray-300 mb-3" />
+                                                                    <h4 className="font-bold text-gray-700">No AI Call Found</h4>
+                                                                    <p className="text-sm text-gray-500 max-w-sm mx-auto mt-1">
+                                                                        This lead has not been processed by the Huskyvoice AI qualification agent.
+                                                                    </p>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })()}
+                                            </div>
+                                        )}
+
                                         {/* ACTIVITY TAB (Leads Movement) */}
+                                        {activeTab === 'discovery' && (
+                                            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                                                <div className="flex justify-between items-center">
+                                                    <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                                                        Discovery Form Responses <Search size={18} className="text-gray-400" />
+                                                    </h3>
+                                                    <button 
+                                                        onClick={() => fetchDiscoveryResponses(formData.contactPhone)}
+                                                        className="text-xs text-brand-blue hover:bg-blue-50 px-3 py-1.5 rounded-lg flex items-center gap-1.5 font-bold transition-all"
+                                                    >
+                                                        <RefreshCw size={12} className={isLoading ? 'animate-spin' : ''} />
+                                                        Refresh
+                                                    </button>
+                                                </div>
+
+                                                {discoveryResponses.length === 0 ? (
+                                                    <div className="text-center py-24 bg-gray-50 rounded-3xl border-2 border-dashed border-gray-200">
+                                                        <div className="w-16 h-16 bg-white rounded-2xl shadow-sm flex items-center justify-center mx-auto mb-6">
+                                                            <Search className="w-8 h-8 text-gray-300" />
+                                                        </div>
+                                                        <p className="text-gray-600 font-bold text-lg">No responses found</p>
+                                                        <p className="text-sm text-gray-400 mt-2 max-w-xs mx-auto">We couldn't find any discovery form submissions for {formData.contactPhone || 'this number'}.</p>
+                                                    </div>
+                                                ) : (
+                                                    <div className="space-y-8">
+                                                        {discoveryResponses.map((response, idx) => (
+                                                            <div key={response.id} className="bg-white rounded-3xl border border-gray-100 overflow-hidden shadow-xl shadow-gray-100/50 hover:shadow-2xl hover:shadow-gray-200/50 transition-all duration-300 border-l-4 border-l-brand-blue">
+                                                                <div className="bg-gradient-to-r from-gray-50 to-white px-8 py-5 border-b border-gray-100 flex justify-between items-center">
+                                                                    <div className="flex items-center gap-3">
+                                                                        <div className="w-8 h-8 bg-brand-blue/10 rounded-lg flex items-center justify-center text-brand-blue font-bold text-xs">
+                                                                            {discoveryResponses.length - idx}
+                                                                        </div>
+                                                                        <span className="text-sm font-bold text-gray-900">Form Submission</span>
+                                                                    </div>
+                                                                    <div className="flex items-center gap-2 text-gray-400">
+                                                                        <Clock size={14} />
+                                                                        <span className="text-xs font-medium">{safeFormat(response.submittedAt, 'MMM d, yyyy • h:mm a')}</span>
+                                                                    </div>
+                                                                </div>
+
+                                                                {/* AI ANALYSIS SECTION */}
+                                                                <div className="px-8 pt-6">
+                                                                    {!response.aiAnalysis ? (
+                                                                        <button 
+                                                                            onClick={() => handleAnalyzeDiscovery(response)}
+                                                                            disabled={isAnalyzingDiscovery[response.id]}
+                                                                            className="w-full py-4 bg-gradient-to-r from-brand-blue/5 to-indigo-500/10 border-2 border-dashed border-brand-blue/20 rounded-2xl flex flex-col items-center justify-center gap-2 hover:border-brand-blue/40 hover:from-brand-blue/10 hover:to-indigo-500/20 transition-all group"
+                                                                        >
+                                                                            {isAnalyzingDiscovery[response.id] ? (
+                                                                                <>
+                                                                                    <RefreshCw size={24} className="text-brand-blue animate-spin" />
+                                                                                    <span className="text-sm font-bold text-brand-blue">Gemini is thinking...</span>
+                                                                                </>
+                                                                            ) : (
+                                                                                <>
+                                                                                    <Sparkles size={24} className="text-brand-blue group-hover:scale-110 transition-transform" />
+                                                                                    <span className="text-sm font-bold text-gray-700">Generate AI Sales Strategy</span>
+                                                                                </>
+                                                                            )}
+                                                                        </button>
+                                                                    ) : (
+                                                                        <div className="bg-gradient-to-br from-indigo-50/50 via-white to-brand-blue/5 rounded-3xl border border-indigo-100/50 p-6 shadow-sm overflow-hidden relative">
+                                                                            <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
+                                                                                <Sparkles size={120} />
+                                                                            </div>
+                                                                            <div className="flex items-center gap-2 mb-4 text-indigo-600">
+                                                                                <Sparkles size={18} />
+                                                                                <h4 className="font-black text-xs uppercase tracking-widest">AI Intelligence Report</h4>
+                                                                            </div>
+                                                                            
+                                                                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                                                                <div className="space-y-4">
+                                                                                    <div>
+                                                                                        <label className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-1 block">Strategic Approach</label>
+                                                                                        <p className="text-sm text-gray-800 font-bold leading-relaxed">{response.aiAnalysis.strategy}</p>
+                                                                                    </div>
+                                                                                    <div>
+                                                                                        <label className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-1 block">Opening Script</label>
+                                                                                        <div className="bg-white/60 border border-indigo-100 rounded-xl p-3 text-sm text-indigo-900 italic font-medium">
+                                                                                            "{response.aiAnalysis.openingScript}"
+                                                                                        </div>
+                                                                                    </div>
+                                                                                </div>
+                                                                                
+                                                                                <div className="space-y-4">
+                                                                                    <div>
+                                                                                        <label className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-1 block">Key Talking Points</label>
+                                                                                        <div className="flex flex-wrap gap-2">
+                                                                                            {response.aiAnalysis.talkingPoints.map((point: string, i: number) => (
+                                                                                                <span key={i} className="px-3 py-1 bg-white border border-indigo-50 text-indigo-700 text-xs font-bold rounded-lg shadow-sm">
+                                                                                                    {point}
+                                                                                                </span>
+                                                                                            ))}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    <div className="grid grid-cols-2 gap-4">
+                                                                                        <div>
+                                                                                            <label className="text-[10px] font-black text-green-500 uppercase tracking-widest mb-1 block">Hot Buttons</label>
+                                                                                            <ul className="text-[11px] font-bold text-gray-600 list-disc list-inside">
+                                                                                                {response.aiAnalysis.hotButtons.map((btn: string, i: number) => <li key={i}>{btn}</li>)}
+                                                                                            </ul>
+                                                                                        </div>
+                                                                                        <div>
+                                                                                            <label className="text-[10px] font-black text-red-400 uppercase tracking-widest mb-1 block">Concerns</label>
+                                                                                            <ul className="text-[11px] font-bold text-gray-600 list-disc list-inside">
+                                                                                                {response.aiAnalysis.concerns.map((con: string, i: number) => <li key={i}>{con}</li>)}
+                                                                                            </ul>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+
+                                                                <div className="p-8 pt-4">
+                                                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-12 gap-y-8">
+                                                                        {Object.entries(response.responses).map(([question, answer]) => (
+                                                                            <div key={question} className="space-y-2 group">
+                                                                                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest group-hover:text-brand-blue transition-colors">{question}</label>
+                                                                                <p className="text-sm text-gray-800 font-semibold leading-relaxed bg-gray-50/50 p-3 rounded-xl border border-transparent group-hover:border-blue-100 transition-all">{answer || '-'}</p>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+
                                         {activeTab === 'activity' && (
                                             <section>
                                                 <h3 className="text-lg font-bold text-gray-900 mb-6 flex items-center gap-2">
@@ -2602,6 +3291,154 @@ const Opportunities: React.FC = () => {
                                                         </div>
                                                     )}
                                                 </div>
+                                            </section>
+                                        )}
+
+                                        {activeTab === 'calls' && (
+                                            <section className="h-full flex flex-col animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                                {(() => {
+                                                    const currentOpp = opportunities.find(o => o.id === editingId);
+                                                    return (
+                                                        <>
+                                                            <div className="flex items-center justify-between mb-6">
+                                                                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                                                                    Call History <Phone size={18} className="text-brand-blue" />
+                                                                </h3>
+                                                                <div className="text-xs text-gray-500 bg-gray-100 px-3 py-1 rounded-full border border-gray-200 flex items-center gap-1.5">
+                                                                    <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
+                                                                    Syncing with Salestrail
+                                                                </div>
+                                                            </div>
+
+                                                            <div className="flex-1 overflow-y-auto min-h-[400px]">
+                                                                {(!currentOpp?.calls || currentOpp.calls.length === 0) ? (
+                                                                    <div className="flex flex-col items-center justify-center h-64 text-center bg-gray-50 rounded-2xl border-2 border-dashed border-gray-200 mx-1">
+                                                                        <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mb-4 text-brand-blue/40">
+                                                                            <Phone size={32} />
+                                                                        </div>
+                                                                        <h4 className="text-gray-900 font-bold mb-1">No calls recorded</h4>
+                                                                        <p className="text-gray-500 text-sm max-w-xs">Outgoing and incoming calls to {formData.contactPhone} will appear here automatically.</p>
+                                                                    </div>
+                                                                ) : (
+                                                                    <div className="space-y-3">
+                                                                        {[...currentOpp.calls].sort((a,b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime()).map((call, idx) => (
+                                                                            <div key={call.id || idx} className="p-4 bg-white border border-gray-200 rounded-xl hover:shadow-md transition-all group">
+                                                                                <div className="flex flex-col gap-3">
+                                                                                    <div className="flex justify-between items-start">
+                                                                                        <div className="flex gap-4">
+                                                                                            <div className={`p-2.5 rounded-lg shrink-0 ${String(call.type).toUpperCase() === 'INCOMING' ? 'bg-green-50 text-green-600' : 'bg-blue-50 text-blue-600'}`}>
+                                                                                                {String(call.type).toUpperCase() === 'INCOMING' ? <PhoneIncoming size={20} /> : <PhoneOutgoing size={20} />}
+                                                                                            </div>
+                                                                                            <div>
+                                                                                                <div className="flex items-center gap-2 mb-1">
+                                                                                                    <span className="text-sm font-bold text-gray-900">{call.userName}</span>
+                                                                                                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                                                                                                        (call.status === 'Completed' || (call.answered && !call.status)) ? 'bg-green-100 text-green-700' : 
+                                                                                                        (call.status === 'Missed Call') ? 'bg-red-100 text-red-700' :
+                                                                                                        (call.status === 'Not Answered') ? 'bg-orange-100 text-orange-700' :
+                                                                                                        'bg-red-100 text-red-700'
+                                                                                                    }`}>
+                                                                                                        {call.status || (call.answered ? 'Answered' : 'Missed')}
+                                                                                                    </span>
+                                                                                                </div>
+                                                                                                <div className="flex items-center gap-3 text-xs text-gray-500">
+                                                                                                    <span className="flex items-center gap-1">
+                                                                                                        <Clock size={12} />
+                                                                                                        {safeFormat(call.startTime, 'MMM d, h:mm a')}
+                                                                                                    </span>
+                                                                                                    <span className="flex items-center gap-1">
+                                                                                                        <Timer size={12} />
+                                                                                                        {Math.floor(call.duration / 60)}m {call.duration % 60}s
+                                                                                                    </span>
+                                                                                                </div>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                                                                                    {call.recordingUrl && (
+                                                                                        <div className="mt-2 p-3 bg-gray-50 rounded-lg border border-gray-200 flex items-center gap-3">
+                                                                                            <div className="w-8 h-8 rounded-full bg-brand-blue/10 flex items-center justify-center text-brand-blue">
+                                                                                                <Volume2 size={16} />
+                                                                                            </div>
+                                                                                            <div className="flex-1">
+                                                                                                <audio 
+                                                                                                    controls 
+                                                                                                    src={`https://us-central1-crm1-76cc4.cloudfunctions.net/getRecordingAudio?url=${encodeURIComponent(call.recordingUrl)}`} 
+                                                                                                    className="w-full h-8 accent-brand-blue"
+                                                                                                />
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    )}
+
+                                                                                    {call.aiAnalysis && (
+                                                                                        <div className="mt-3 p-4 bg-gradient-to-br from-blue-50/50 to-indigo-50/50 rounded-xl border border-blue-100 shadow-sm overflow-hidden relative group/ai">
+                                                                                            <div className="absolute top-0 right-0 p-2 opacity-10 group-hover/ai:opacity-20 transition-opacity">
+                                                                                                <TrendingUp size={64} className="text-brand-blue" />
+                                                                                            </div>
+                                                                                            
+                                                                                            <div className="flex items-center justify-between mb-3">
+                                                                                                <div className="flex items-center gap-2">
+                                                                                                    <div className="p-1.5 bg-brand-blue text-white rounded-lg shadow-sm">
+                                                                                                        <Zap size={14} />
+                                                                                                    </div>
+                                                                                                    <span className="text-xs font-bold text-brand-blue uppercase tracking-wider">AI Call Insight</span>
+                                                                                                </div>
+                                                                                                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-white font-bold text-sm shadow-sm ${
+                                                                                                    call.aiAnalysis.rating >= 8 ? 'bg-green-500' :
+                                                                                                    call.aiAnalysis.rating >= 5 ? 'bg-orange-500' :
+                                                                                                    'bg-red-500'
+                                                                                                }`}>
+                                                                                                    <Award size={14} />
+                                                                                                    {call.aiAnalysis.rating}/10
+                                                                                                </div>
+                                                                                            </div>
+
+                                                                                            <div className="relative z-10 space-y-3">
+                                                                                                <div>
+                                                                                                    <p className="text-sm font-medium text-gray-800 leading-relaxed italic">
+                                                                                                        "{call.aiAnalysis.summary}"
+                                                                                                    </p>
+                                                                                                </div>
+
+                                                                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                                                                    <div className="p-3 bg-white/60 rounded-lg border border-green-100">
+                                                                                                        <h5 className="text-[10px] font-bold text-green-700 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
+                                                                                                            <CheckSquare size={12} /> Key Strengths
+                                                                                                        </h5>
+                                                                                                        <ul className="space-y-1">
+                                                                                                            {(call.aiAnalysis.goodFeatures || []).slice(0, 3).map((item, idx) => (
+                                                                                                                <li key={idx} className="text-xs text-gray-700 flex items-start gap-1.5">
+                                                                                                                    <div className="w-1 h-1 rounded-full bg-green-500 mt-1.5 shrink-0"></div>
+                                                                                                                    {item}
+                                                                                                                </li>
+                                                                                                            ))}
+                                                                                                        </ul>
+                                                                                                    </div>
+                                                                                                    <div className="p-3 bg-white/60 rounded-lg border border-orange-100">
+                                                                                                        <h5 className="text-[10px] font-bold text-orange-700 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
+                                                                                                            <TrendingUp size={12} /> Improvements
+                                                                                                        </h5>
+                                                                                                        <ul className="space-y-1">
+                                                                                                            {(call.aiAnalysis.improvements || []).slice(0, 3).map((item, idx) => (
+                                                                                                                <li key={idx} className="text-xs text-gray-700 flex items-start gap-1.5">
+                                                                                                                    <div className="w-1 h-1 rounded-full bg-orange-500 mt-1.5 shrink-0"></div>
+                                                                                                                    {item}
+                                                                                                                </li>
+                                                                                                            ))}
+                                                                                                        </ul>
+                                                                                                    </div>
+                                                                                                </div>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    )}
+                                                                                </div>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </>
+                                                    );
+                                                })()}
                                             </section>
                                         )}
                                     </div>

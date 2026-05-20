@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
 import { useStore } from '../store/useStore';
-import { Save, Plus, Trash2, GripVertical } from 'lucide-react';
+import { Save, Plus, Trash2, GripVertical, FileText, Globe } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import toast from 'react-hot-toast';
 import { resetAllTasks } from '../lib/admin';
+import { functions } from '../lib/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { Activity } from 'lucide-react';
 
 interface SortableStageItemProps {
     stage: any;
@@ -53,13 +56,97 @@ const SortableStageItem: React.FC<SortableStageItemProps> = ({ stage, onRemove, 
 };
 
 const Settings: React.FC = () => {
-    const { stages, updateStages, removeDuplicateContacts, removeDuplicateOpportunities, cleanupLegacySources } = useStore();
+    const { stages, updateStages, removeDuplicateContacts, removeDuplicateOpportunities, cleanupLegacySources, clearLeadsByStage, salesAssets, updateSalesAssets } = useStore();
     const [localStages, setLocalStages] = useState(stages);
     const [activeTab, setActiveTab] = useState('pipelines');
     const [isCleaningContacts, setIsCleaningContacts] = useState(false);
     const [isCleaningOpportunities, setIsCleaningOpportunities] = useState(false);
     const [isCleaningSources, setIsCleaningSources] = useState(false);
+    const [isCleaningJunk, setIsCleaningJunk] = useState(false);
+    const [isCleaningNoBudget, setIsCleaningNoBudget] = useState(false);
     const [isResettingTasks, setIsResettingTasks] = useState(false);
+
+    // AI Backfill States
+    const [isScanningBackfill, setIsScanningBackfill] = useState(false);
+    const [isBackfilling, setIsBackfilling] = useState(false);
+    const [backfillStats, setBackfillStats] = useState<{ pendingCalls: number, pendingLeads: number, scannedLeads: number } | null>(null);
+    const [backfillLogs, setBackfillLogs] = useState<string[]>([]);
+    const [backfillProgress, setBackfillProgress] = useState({ current: 0, total: 0 });
+
+    const isBackfillingRef = React.useRef(false);
+
+    const handleScanBackfill = async () => {
+        setIsScanningBackfill(true);
+        try {
+            const getBackfillStatus = httpsCallable(functions, 'getBackfillStatus');
+            const result: any = await getBackfillStatus();
+            setBackfillStats(result.data);
+            setBackfillLogs(prev => [...prev, `[System] Scanned ${result.data.scannedLeads} leads. Found ${result.data.pendingCalls} pending calls in ${result.data.pendingLeads} leads.`]);
+            if (!isBackfillingRef.current) {
+                setBackfillProgress({ current: 0, total: result.data.pendingCalls });
+            }
+        } catch (err: any) {
+            toast.error("Failed to check backfill status");
+            setBackfillLogs(prev => [...prev, `[Error] Failed to scan: ${err.message}`]);
+        } finally {
+            setIsScanningBackfill(false);
+        }
+    };
+
+    const handleStartBackfill = async () => {
+        if (!backfillStats || backfillStats.pendingCalls === 0) return;
+        setIsBackfilling(true);
+        isBackfillingRef.current = true;
+        setBackfillLogs(prev => [...prev, `[System] Starting backfill sequence for ~${backfillStats.pendingCalls} calls...`]);
+        setBackfillProgress({ current: 0, total: backfillStats.pendingCalls });
+        
+        let remainingCalls = backfillStats.pendingCalls;
+        let processedTotal = 0;
+        
+        const aiBackfillBatch = httpsCallable(functions, 'aiBackfillBatch', { timeout: 540000 });
+        
+        while (remainingCalls > 0 && isBackfillingRef.current) {
+            try {
+                setBackfillLogs(prev => [...prev, `[System] Requesting next batch (up to 3 leads)...`]);
+                const result: any = await aiBackfillBatch({ batchSize: 3 });
+                const data = result.data;
+                
+                processedTotal += data.totalProcessedCalls;
+                remainingCalls -= data.totalProcessedCalls;
+                
+                setBackfillProgress(prev => ({ ...prev, current: processedTotal }));
+                
+                if (data.errors && data.errors.length > 0) {
+                    setBackfillLogs(prev => [...prev, ...data.errors.map((e: string) => `[Error] ${e}`)]);
+                }
+                if (data.totalSuccessCalls > 0) {
+                    setBackfillLogs(prev => [...prev, `[Success] Analyzed ${data.totalSuccessCalls} calls successfully.`]);
+                }
+                
+                if (data.processedLeads === 0) {
+                    setBackfillLogs(prev => [...prev, `[System] No more pending calls detected in scan range.`]);
+                    break;
+                }
+                
+            } catch (err: any) {
+                console.error(err);
+                setBackfillLogs(prev => [...prev, `[Fatal Error] Batch failed: ${err.message}`]);
+                break; // Stop on fatal error
+            }
+        }
+        
+        setBackfillLogs(prev => [...prev, `[System] Backfill sequence finished.`]);
+        setIsBackfilling(false);
+        isBackfillingRef.current = false;
+        
+        handleScanBackfill();
+    };
+
+    const handleStopBackfill = () => {
+        isBackfillingRef.current = false;
+        setIsBackfilling(false);
+        setBackfillLogs(prev => [...prev, `[System] Stopping after current batch finishes...`]);
+    };
 
     // Sync local stages with store stages when they update (e.g. from real-time listener)
     React.useEffect(() => {
@@ -153,6 +240,15 @@ const Settings: React.FC = () => {
                         >
                             Cleanup
                         </button>
+                        <button
+                            onClick={() => setActiveTab('assets')}
+                            className={`flex-1 md:flex-none text-center md:text-left px-4 py-3 text-xs md:text-sm font-bold border-b-2 md:border-b-0 md:border-l-4 transition-colors ${activeTab === 'assets'
+                                ? 'border-primary bg-primary/5 text-black'
+                                : 'border-transparent text-gray-600 hover:bg-gray-50'
+                                }`}
+                        >
+                            Sales Assets
+                        </button>
                     </div>
                 </div>
 
@@ -215,6 +311,83 @@ const Settings: React.FC = () => {
                             </div>
                             <h3 className="text-lg font-medium text-gray-900">Company Profile</h3>
                             <p className="text-gray-500 mt-2">Manage company details and branding (Coming Soon)</p>
+                        </div>
+                    )}
+
+                    {activeTab === 'assets' && (
+                        <div className="max-w-2xl">
+                            <div className="mb-6">
+                                <h2 className="text-xl font-bold text-gray-900">Sales Assets</h2>
+                                <p className="text-sm text-gray-500 mt-1">Configure your marketing decks and discovery forms for automated delivery</p>
+                            </div>
+
+                            <div className="space-y-6">
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+                                            <FileText size={16} className="text-primary" />
+                                            Sales Deck Part 1 (PDF URL)
+                                        </label>
+                                        <input
+                                            type="url"
+                                            value={salesAssets?.pdf1Url || ''}
+                                            onChange={(e) => updateSalesAssets({ 
+                                                pdf1Url: e.target.value,
+                                                pdf2Url: salesAssets?.pdf2Url || '',
+                                                formUrl: salesAssets?.formUrl || ''
+                                            })}
+                                            placeholder="https://storage.googleapis.com/..."
+                                            className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+                                            <FileText size={16} className="text-primary" />
+                                            Sales Deck Part 2 (PDF URL)
+                                        </label>
+                                        <input
+                                            type="url"
+                                            value={salesAssets?.pdf2Url || ''}
+                                            onChange={(e) => updateSalesAssets({ 
+                                                pdf1Url: salesAssets?.pdf1Url || '',
+                                                pdf2Url: e.target.value,
+                                                formUrl: salesAssets?.formUrl || ''
+                                            })}
+                                            placeholder="https://storage.googleapis.com/..."
+                                            className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+                                            <Globe size={16} className="text-primary" />
+                                            Discovery Form URL
+                                        </label>
+                                        <input
+                                            type="url"
+                                            value={salesAssets?.formUrl || ''}
+                                            onChange={(e) => updateSalesAssets({ 
+                                                pdf1Url: salesAssets?.pdf1Url || '',
+                                                pdf2Url: salesAssets?.pdf2Url || '',
+                                                formUrl: e.target.value
+                                            })}
+                                            placeholder="https://docs.google.com/forms/..."
+                                            className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="bg-primary/5 border border-primary/20 rounded-lg p-4">
+                                    <h4 className="font-bold text-sm text-gray-900 mb-1 flex items-center gap-2">
+                                        <Activity size={16} className="text-primary" />
+                                        How it works
+                                    </h4>
+                                    <p className="text-xs text-gray-600 leading-relaxed">
+                                        When you click "Send Sales Assets" on a lead, the system will automatically fetch these URLs and send them as sequential WhatsApp messages using your Wati templates.
+                                    </p>
+                                </div>
+                            </div>
                         </div>
                     )}
 
@@ -343,6 +516,92 @@ const Settings: React.FC = () => {
                                     </div>
                                 </div>
 
+                                {/* Clear Junk Leads */}
+                                <div className="bg-red-50 p-4 rounded-lg border border-red-200">
+                                    <div className="flex justify-between items-center">
+                                        <div>
+                                            <h3 className="font-medium text-gray-900">Clear Junk Leads</h3>
+                                            <p className="text-sm text-gray-500 mt-1">
+                                                Permanently delete all opportunities currently in the "0 - Junk" stage.
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={async () => {
+                                                if (!window.confirm('⚠️ Are you sure you want to delete ALL Junk leads? This action cannot be undone!')) {
+                                                    return;
+                                                }
+                                                setIsCleaningJunk(true);
+                                                try {
+                                                    const result = await clearLeadsByStage('0');
+                                                    if (result.success) {
+                                                        toast.success(`Successfully removed ${result.removed} junk leads`);
+                                                    }
+                                                } catch (error) {
+                                                    toast.error('Failed to clear junk leads');
+                                                }
+                                                setIsCleaningJunk(false);
+                                            }}
+                                            disabled={isCleaningJunk}
+                                            className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                                        >
+                                            {isCleaningJunk ? (
+                                                <>
+                                                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                                    Clearing...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Trash2 size={16} />
+                                                    Clear Junk Leads
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Clear No Budget Leads */}
+                                <div className="bg-red-50 p-4 rounded-lg border border-red-200">
+                                    <div className="flex justify-between items-center">
+                                        <div>
+                                            <h3 className="font-medium text-gray-900">Clear No Budget Leads</h3>
+                                            <p className="text-sm text-gray-500 mt-1">
+                                                Permanently delete all opportunities currently in the "0.5 - No Budget" stage.
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={async () => {
+                                                if (!window.confirm('⚠️ Are you sure you want to delete ALL No Budget leads? This action cannot be undone!')) {
+                                                    return;
+                                                }
+                                                setIsCleaningNoBudget(true);
+                                                try {
+                                                    const result = await clearLeadsByStage('0.5');
+                                                    if (result.success) {
+                                                        toast.success(`Successfully removed ${result.removed} no-budget leads`);
+                                                    }
+                                                } catch (error) {
+                                                    toast.error('Failed to clear no-budget leads');
+                                                }
+                                                setIsCleaningNoBudget(false);
+                                            }}
+                                            disabled={isCleaningNoBudget}
+                                            className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                                        >
+                                            {isCleaningNoBudget ? (
+                                                <>
+                                                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                                    Clearing...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Trash2 size={16} />
+                                                    Clear No Budget Leads
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                </div>
+
                                 {/* Reset All Tasks */}
                                 <div className="bg-red-50 p-4 rounded-lg border border-red-200">
                                     <div className="flex justify-between items-center">
@@ -386,6 +645,84 @@ const Settings: React.FC = () => {
                                             )}
                                         </button>
                                     </div>
+                                </div>
+
+                                {/* AI Call Analysis Backfill */}
+                                <div className="bg-indigo-50 border border-indigo-200 p-4 rounded-lg">
+                                    <div className="flex justify-between items-start mb-4">
+                                        <div>
+                                            <h3 className="font-medium text-gray-900 flex items-center gap-2">
+                                                <Activity size={18} className="text-indigo-600" />
+                                                Automated AI Call Analysis Backfill
+                                            </h3>
+                                            <p className="text-sm text-gray-500 mt-1 max-w-lg">
+                                                Scan the top 500 recently modified opportunities to find audio recordings missing AI analysis. 
+                                                You can then process them sequentially within the Gemini API limits.
+                                            </p>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button
+                                                onClick={handleScanBackfill}
+                                                disabled={isScanningBackfill || isBackfilling}
+                                                className="px-3 py-1.5 bg-white border border-indigo-300 text-indigo-700 rounded-lg text-sm font-medium hover:bg-indigo-100 disabled:opacity-50"
+                                            >
+                                                {isScanningBackfill ? 'Scanning...' : 'Scan Status'}
+                                            </button>
+                                            
+                                            {isBackfilling ? (
+                                                <button
+                                                    onClick={handleStopBackfill}
+                                                    className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700"
+                                                >
+                                                    Stop Batch
+                                                </button>
+                                            ) : (
+                                                <button
+                                                    onClick={handleStartBackfill}
+                                                    disabled={!backfillStats || backfillStats.pendingCalls === 0}
+                                                    className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+                                                >
+                                                    Start Backfill
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                    
+                                    {backfillStats && (
+                                        <div className="bg-white p-3 rounded border border-indigo-100 mb-3 text-sm flex gap-6">
+                                            <div><span className="text-gray-500">Scanned Leads:</span> <span className="font-semibold text-gray-900">{backfillStats.scannedLeads}</span></div>
+                                            <div><span className="text-gray-500">Missing AI Analysis:</span> <span className="font-semibold text-red-600">{backfillStats.pendingCalls} recordings</span></div>
+                                            <div><span className="text-gray-500">Affected Leads:</span> <span className="font-semibold text-indigo-600">{backfillStats.pendingLeads}</span></div>
+                                        </div>
+                                    )}
+
+                                    {/* Progress Bar */}
+                                    {backfillProgress.total > 0 && (
+                                        <div className="mb-4">
+                                            <div className="flex justify-between text-xs mb-1">
+                                                <span className="font-medium text-indigo-700">Progress</span>
+                                                <span className="text-gray-600">{backfillProgress.current} / {backfillProgress.total}</span>
+                                            </div>
+                                            <div className="w-full bg-indigo-200 rounded-full h-2">
+                                                <div 
+                                                    className="bg-indigo-600 h-2 rounded-full transition-all duration-500" 
+                                                    style={{ width: `${Math.min(100, (backfillProgress.current / backfillProgress.total) * 100)}%` }}
+                                                ></div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    
+                                    {/* Log Window */}
+                                    {backfillLogs.length > 0 && (
+                                        <div className="bg-gray-900 rounded-md p-3 font-mono text-[11px] h-32 overflow-y-auto text-gray-300 flex flex-col-reverse">
+                                            {/* Reversed order inside a flex-col-reverse to show latest logs at the bottom automatically */}
+                                            {[...backfillLogs].reverse().map((log, i) => (
+                                                <div key={i} className={`py-0.5 ${log.includes('[Error]') || log.includes('[Fatal') ? 'text-red-400' : log.includes('[Success]') ? 'text-green-400' : 'text-gray-400'}`}>
+                                                    {log}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mt-6">

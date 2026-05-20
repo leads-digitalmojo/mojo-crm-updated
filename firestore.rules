@@ -9,7 +9,8 @@ service cloud.firestore {
         request.auth.token.email.lower() == 'veda@digitalmojo.in' ||
         request.auth.token.email.lower() == 'srishti@digitalmojo.in' ||
         request.auth.token.email.lower() == 'komal@digitalmojo.in' ||
-        request.auth.token.email.lower() == 'aditya.digitalmojo@gmail.com'
+        request.auth.token.email.lower() == 'aditya.digitalmojo@gmail.com' ||
+        request.auth.token.email.lower() == 'anshita@digitalmojo.in'
       );
     }
 

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Contact, Opportunity, Appointment, Conversation, Notification, Message, User, LoginLog } from '../types';
+import { Contact, Opportunity, Appointment, Conversation, Notification, Message, User, LoginLog, DiscoveryResponse } from '../types';
 import { api } from '../services/api';
 import { auth } from '../lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
@@ -83,10 +83,21 @@ interface AppState {
     removeDuplicateContacts: () => Promise<{ removed: number; kept: number }>;
     removeDuplicateOpportunities: () => Promise<{ removed: number; kept: number }>;
     cleanupLegacySources: (cutoffDate?: string) => Promise<{ updated: number }>;
+    clearLeadsByStage: (stageId: string) => Promise<{ success: boolean; removed: number }>;
 
     // Google Integration
     googleToken: string | null;
     setGoogleToken: (token: string | null) => void;
+
+    // Sales Assets
+    salesAssets: { pdf1Url: string, pdf2Url: string, formUrl: string } | null;
+    fetchSalesAssets: () => Promise<void>;
+    updateSalesAssets: (data: { pdf1Url: string, pdf2Url: string, formUrl: string }) => Promise<void>;
+    sendSalesAssets: (opportunityId: string) => Promise<void>;
+
+    // Discovery Form
+    discoveryResponses: DiscoveryResponse[];
+    fetchDiscoveryResponses: (phone: string) => Promise<void>;
 
     initializeListeners: () => void;
 }
@@ -95,6 +106,7 @@ export const useStore = create<AppState>((set, get) => ({
     currentUser: null,
     isLoadingAuth: true,
     setCurrentUser: (user) => set({ currentUser: user }),
+    discoveryResponses: [],
     logout: async () => {
         if (!isDemoMode()) {
             await signOut(auth);
@@ -311,6 +323,12 @@ export const useStore = create<AppState>((set, get) => ({
     },
     cleanupLegacySources: async (cutoffDate: string) => {
         const result = await api.opportunities.cleanupLegacySources(cutoffDate);
+        // Refresh opportunities after cleanup
+        get().fetchOpportunities();
+        return result;
+    },
+    clearLeadsByStage: async (stageId: string) => {
+        const result = await api.opportunities.clearLeadsByStage(stageId);
         // Refresh opportunities after cleanup
         get().fetchOpportunities();
         return result;
@@ -794,6 +812,38 @@ export const useStore = create<AppState>((set, get) => ({
         set({ loginLogs: logs });
     },
 
+    salesAssets: null,
+    fetchSalesAssets: async () => {
+        try {
+            const assets = await api.settings.getSalesAssets();
+            set({ salesAssets: assets as any });
+        } catch (error) {
+            console.error('Failed to fetch sales assets:', error);
+        }
+    },
+    updateSalesAssets: async (data) => {
+        await api.settings.updateSalesAssets(data);
+        set({ salesAssets: { ...data } });
+    },
+    sendSalesAssets: async (opportunityId) => {
+        await api.actions.sendSalesAssets(opportunityId);
+    },
+
+    fetchDiscoveryResponses: async (phone) => {
+        if (!phone) {
+            set({ discoveryResponses: [] });
+            return;
+        }
+        set({ isLoading: true });
+        try {
+            const responses = await api.discovery.getResponses(phone);
+            set({ discoveryResponses: responses, isLoading: false });
+        } catch (error) {
+            console.error('Failed to fetch discovery responses:', error);
+            set({ discoveryResponses: [], isLoading: false });
+        }
+    },
+
     initializeListeners: () => {
         const userId = get().currentUser?.id;
         if (!userId) return;
@@ -804,6 +854,7 @@ export const useStore = create<AppState>((set, get) => ({
         get().fetchAppointments();
         get().fetchConversations();
         get().fetchNotifications();
+        get().fetchSalesAssets();
 
         // Fetch initial stages once to avoid race conditions in pages
         api.pipelines.get().then(data => {
