@@ -83,7 +83,7 @@ async function sendWatiTemplate(phone, templateName, parameters) {
         template_name: templateName,
         broadcast_name: `CRM_${templateName}_${Date.now()}`,
         parameters: parameters.map((val, index) => ({
-            name: (index + 1).toString(),
+            name: index === 0 ? "name" : (index + 1).toString(),
             value: (val || 'N/A').toString().replace(/[\n\t]/g, ' ').replace(/\s+/g, ' ').trim()
         }))
     };
@@ -114,7 +114,7 @@ async function sendWatiMediaTemplate(phone, templateName, parameters, mediaUrl) 
             filename: "Sales_Deck.pdf"
         },
         parameters: parameters.map((val, index) => ({
-            name: (index + 1).toString(),
+            name: index === 0 ? "name" : (index + 1).toString(),
             value: (val || 'N/A').toString().replace(/[\n\t]/g, ' ').replace(/\s+/g, ' ').trim()
         }))
     };
@@ -191,8 +191,6 @@ async function sendLeadWelcomeSequence(phone, leadName, assignedName, opportunit
     }
 }
 
-/**
- * Helper to normalize phone numbers for comparison.
 /**
  * Helper to normalize phone numbers for comparison and storage.
  * Simply strips non-digits to keep country codes intact.
@@ -648,8 +646,6 @@ exports.whatsappWebhook = functions.runWith({ timeoutSeconds: 60, memory: '512MB
             return res.status(200).send('Unauthorized');
         }
 
-        const axios = require('axios');
-
         // 4. Fetch image if present (OCR Support)
         let imagePart = null;
         if (mediaUrl) {
@@ -683,7 +679,9 @@ exports.whatsappWebhook = functions.runWith({ timeoutSeconds: 60, memory: '512MB
 
         // 5. Call Gemini for Lead Extraction
         console.log('[WhatsApp Webhook] Calling Gemini for extraction...');
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        // Primary model with fallback for reliability
+        const modelName = "gemini-2.5-flash";
+        const model = genAI.getGenerativeModel({ model: modelName });
 
         const yourExtractionPrompt = `You are an expert lead extraction assistant. Extract lead information from this WhatsApp message and/or screenshot.
         
@@ -751,7 +749,6 @@ exports.whatsappWebhook = functions.runWith({ timeoutSeconds: 60, memory: '512MB
                 console.log(`[WhatsApp Webhook] Skip - Lead with phone ${normalizedExtractedPhone} already exists.`);
                 // Still send confirmation to boss that it was recognized
                 const existingLead = existingSnapshot.docs[0].data();
-                const senderNumber = normalizePhone(payload.waId || payload.whatsappNumber || payload.from || '');
 
                 try {
                     await sendWatiTemplate(senderNumber, 'lead_created_confirmation', [
@@ -778,20 +775,20 @@ exports.whatsappWebhook = functions.runWith({ timeoutSeconds: 60, memory: '512MB
         // 6. Round-Robin Assignment (Rupal vs Veda)
         const { name: assignedName, email: assignedTo } = await getNextAssignee();
 
-        // 6. Build Notes
+        // 7. Build Notes
         const notesArray = [rawText];
         if (extracted.notes) {
             notesArray.push(extracted.notes);
         }
 
-        // 7. Check if Test Number for AI Calling
+        // 8. Check if Test Number for AI Calling
         const settingsSnap = await db.collection('settings').doc('huskyvoice').get();
         const testNumbers = settingsSnap.exists ? settingsSnap.data().test_phone_numbers || [] : [];
         const normalizedPhoneValue = normalizePhone(extracted.phone);
         const normalizedTestNumbers = testNumbers.map(n => normalizePhone(n));
         const isTestNumber = normalizedTestNumbers.includes(normalizedPhoneValue);
 
-        // 8. Create Opportunity Document
+        // 9. Create Opportunity Document
         const displayLeadName = extracted.name || extracted.phone || 'WhatsApp Lead';
         const opportunityData = {
             name: displayLeadName,
@@ -933,7 +930,7 @@ exports.deadlineAlerts = functions.pubsub.schedule('every 10 minutes').onRun(asy
         // But we keep checking for deadlines regardless of creation date if they are Open
 
         // --- 1. NEW ASSIGNMENT CHECK ---
-        if (lead.followUpAssignee && lead.assignmentNotified === false) {
+        if (lead.followUpAssignee && lead.assignmentNotified !== true) {
             const sent = await notifyTeamMember(lead.followUpAssignee, {
                 type: 'assignment',
                 leadName: lead.name,
@@ -1838,6 +1835,29 @@ exports.discoveryWebhook = functions.https.onRequest(async (req, res) => {
         });
 
         console.log(`[Discovery Webhook] Saved response for ${normalizedPhone}`);
+
+        // Mark the lead's opportunity as form filled
+        // so the follow-up message doesn't get sent to them
+        try {
+            const oppSnap = await db.collection('opportunities')
+                .where('phone', '==', normalizedPhone)
+                .limit(1)
+                .get();
+
+            if (!oppSnap.empty) {
+                await oppSnap.docs[0].ref.update({
+                    discoveryFormFilled: true,
+                    discoveryFormFilledAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString()
+                });
+                console.log(`[Discovery Webhook] ✅ Marked lead as form filled for ${normalizedPhone}`);
+            } else {
+                console.log(`[Discovery Webhook] No opportunity found for ${normalizedPhone}`);
+            }
+        } catch (markErr) {
+            console.error('[Discovery Webhook] Failed to mark form filled:', markErr.message);
+        }
+
         res.status(200).send({ success: true, id: docId });
     } catch (error) {
         console.error('[Discovery Webhook] Error:', error);
@@ -2303,6 +2323,221 @@ exports.sendSalesAssets = functions.https.onCall(async (data, context) => {
         throw new functions.https.HttpsError('internal', error.message);
     }
 });
+
+
+// ============================================================
+// DISCOVERY FORM AUTOMATION — 3 NEW FUNCTIONS
+// ============================================================
+
+// FUNCTION 1: sendDiscoveryForm
+exports.sendDiscoveryForm = functions.https.onCall(async (data, context) => {
+    if (!context.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Must be logged in.');
+    }
+    const { opportunityId } = data;
+    if (!opportunityId) {
+        throw new functions.https.HttpsError('invalid-argument', 'opportunityId is required.');
+    }
+    const db = getDb();
+    const leadDoc = await db.collection('opportunities').doc(opportunityId).get();
+    if (!leadDoc.exists) {
+        throw new functions.https.HttpsError('not-found', `Lead ${opportunityId} not found.`);
+    }
+    const leadData = leadDoc.data();
+    const phone = leadData.phone || leadData.contactPhone;
+    const leadName = leadData.contactName || leadData.name || 'there';
+    if (!phone) {
+        throw new functions.https.HttpsError('invalid-argument', 'This lead has no phone number.');
+    }
+    const cleanPhone = phone.replace(/\D/g, '');
+    const settingsDoc = await db.collection('settings').doc('sales_assets').get();
+    if (!settingsDoc.exists) {
+        throw new functions.https.HttpsError('failed-precondition', 'Sales assets settings not found.');
+    }
+    const sentAt = new Date().toISOString();
+    await db.collection('opportunities').doc(opportunityId).update({
+        discoveryFormSentAt: sentAt,
+        discoveryFormFilled: false,
+        discoveryFormFollowUpSent: false,
+        updatedAt: sentAt,
+        activities: admin.firestore.FieldValue.arrayUnion({
+            id: Date.now().toString(),
+            type: 'note_added',
+            description: `Discovery form sent to ${leadName} via WhatsApp`,
+            timestamp: sentAt,
+            userId: context.auth.uid,
+            userName: context.auth.token.name || 'Team'
+        })
+    });
+    return { success: true, sentAt };
+});
+
+
+// FUNCTION 2: checkDiscoveryFormFollowUp
+exports.checkDiscoveryFormFollowUp = functions.pubsub.schedule('every 5 minutes').onRun(async (context) => {
+    const db = getDb();
+    const now = new Date();
+    const fifteenMinsAgo = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
+    console.log(`[Discovery Follow-Up] Running check at ${now.toISOString()}`);
+    const snapshot = await db.collection('opportunities')
+        .where('status', '==', 'Open')
+        .where('discoveryFormFilled', '==', false)
+        .where('discoveryFormFollowUpSent', '==', false)
+        .get();
+    if (snapshot.empty) {
+        console.log('[Discovery Follow-Up] No pending follow-ups found.');
+        return null;
+    }
+    console.log(`[Discovery Follow-Up] Found ${snapshot.size} leads to check.`);
+    for (const doc of snapshot.docs) {
+        const lead = doc.data();
+        if (!lead.discoveryFormSentAt) continue;
+        if (lead.discoveryFormSentAt > fifteenMinsAgo) {
+            console.log(`[Discovery Follow-Up] Skipping ${lead.name} — timer not reached yet.`);
+            continue;
+        }
+        const phone = lead.phone || lead.contactPhone;
+        if (!phone) continue;
+        const cleanPhone = phone.replace(/\D/g, '');
+        const leadName = lead.contactName || lead.name || 'there';
+        console.log(`[Discovery Follow-Up] Sending follow-up to ${leadName} (${cleanPhone})`);
+        try {
+            await sendWatiTemplate(cleanPhone, 'discovery_form_followup', [leadName]);
+            await doc.ref.update({
+                discoveryFormFollowUpSent: true,
+                discoveryFormFollowUpSentAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            });
+            console.log(`[Discovery Follow-Up] ✅ Follow-up sent to ${leadName}`);
+        } catch (err) {
+            console.error(`[Discovery Follow-Up] Failed for ${leadName}:`, err.message);
+        }
+    }
+    return null;
+});
+
+
+// FUNCTION 3: discoveryFormReplyWebhook
+exports.discoveryFormReplyWebhook = functions.https.onRequest(async (req, res) => {
+    if (req.method !== 'POST') {
+        return res.status(405).send('Method Not Allowed');
+    }
+    const db = getDb();
+    const axios = require('axios');
+    try {
+        const payload = req.body;
+        console.log(`[Discovery Reply] Received payload: ${JSON.stringify(payload)}`);
+        const replyText = (
+            payload.text?.body ||
+            payload.text ||
+            payload.messageText ||
+            payload.button_reply?.title ||
+            payload.interactive?.button_reply?.title ||
+            ''
+        ).trim();
+        const senderPhone = normalizePhone(payload.waId || payload.whatsappNumber || payload.from || '');
+        if (!replyText || !senderPhone) {
+            console.log('[Discovery Reply] Missing reply text or phone. Ignoring.');
+            return res.status(200).send('Ignored');
+        }
+        let leadDoc = null;
+        const snapshot1 = await db.collection('opportunities')
+            .where('phone', '==', senderPhone)
+            .where('discoveryFormFollowUpSent', '==', true)
+            .where('discoveryFormFilled', '==', false)
+            .limit(1)
+            .get();
+        if (!snapshot1.empty) {
+            leadDoc = snapshot1.docs[0];
+        } else {
+            const snapshot2 = await db.collection('opportunities')
+                .where('contactPhone', '==', senderPhone)
+                .where('discoveryFormFollowUpSent', '==', true)
+                .where('discoveryFormFilled', '==', false)
+                .limit(1)
+                .get();
+            if (!snapshot2.empty) leadDoc = snapshot2.docs[0];
+        }
+        if (!leadDoc) {
+            console.log(`[Discovery Reply] No matching lead found for ${senderPhone}. Ignoring.`);
+            return res.status(200).send('No matching lead');
+        }
+        const lead = leadDoc.data();
+        const leadName = lead.contactName || lead.name || 'Lead';
+        const ownerEmail = lead.owner || lead.followUpAssignee;
+        console.log(`[Discovery Reply] Matched lead: ${leadName}. Reply: "${replyText}"`);
+        const anthropic = new Anthropic({ apiKey: getAnthropicKey() });
+        const classificationPrompt = `A lead named "${leadName}" replied to a WhatsApp message asking why they haven't filled a discovery form.\n\nTheir reply was: "${replyText}"\n\nClassify this reply into EXACTLY one of these 3 categories:\n- BUDGET_HIGH: They think the price or budget is too high\n- NEED_MORE_TIME: They need more time to decide\n- NOT_INTERESTED: They are not interested at all\n\nRespond with ONLY a JSON object like this, nothing else:\n{"category": "CATEGORY_HERE", "reason": "one short sentence explaining why"}`;
+        let classification = { category: 'NOT_INTERESTED', reason: replyText };
+        try {
+            const message = await anthropic.messages.create({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 200,
+                messages: [{ role: 'user', content: classificationPrompt }]
+            });
+            const responseText = message.content[0].text.trim();
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                classification = JSON.parse(jsonMatch[0]);
+            }
+        } catch (claudeErr) {
+            console.error('[Discovery Reply] Claude failed, using keyword fallback:', claudeErr.message);
+            const lower = replyText.toLowerCase();
+            if (lower.includes('budget') || lower.includes('expensive') || lower.includes('cost') || lower.includes('price') || lower.includes('high')) {
+                classification = { category: 'BUDGET_HIGH', reason: 'Lead mentioned budget concerns' };
+            } else if (lower.includes('time') || lower.includes('later') || lower.includes('busy') || lower.includes('wait')) {
+                classification = { category: 'NEED_MORE_TIME', reason: 'Lead needs more time' };
+            } else {
+                classification = { category: 'NOT_INTERESTED', reason: 'Defaulting to not interested' };
+            }
+        }
+        console.log(`[Discovery Reply] Classification: ${JSON.stringify(classification)}`);
+        const categoryLabels = {
+            BUDGET_HIGH: { emoji: '💰', label: 'Budget is too high' },
+            NEED_MORE_TIME: { emoji: '⏳', label: 'Needs more time' },
+            NOT_INTERESTED: { emoji: '🚫', label: 'Not interested' }
+        };
+        const { emoji, label } = categoryLabels[classification.category] || categoryLabels.NOT_INTERESTED;
+        await leadDoc.ref.update({
+            discoveryFormReply: replyText,
+            discoveryFormReplyCategory: classification.category,
+            discoveryFormReplyAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            activities: admin.firestore.FieldValue.arrayUnion({
+                id: Date.now().toString(),
+                type: 'note_added',
+                description: `Discovery form reply received: "${replyText}" — ${label}`,
+                timestamp: new Date().toISOString(),
+                userName: 'Discovery Automation'
+            })
+        });
+        console.log(`[Discovery Reply] ✅ Reply saved to lead ${leadName}`);
+        const notificationMessage = `${emoji} ${leadName} replied to discovery form: "${replyText}" — ${label}`;
+        await db.collection('notifications').add({
+            title: 'Discovery Form Reply',
+            message: notificationMessage,
+            time: new Date().toISOString(),
+            read: false,
+            type: 'discovery_reply',
+            leadId: leadDoc.id,
+            leadName: leadName,
+            leadPhone: senderPhone,
+            category: classification.category,
+            assignedTo: ownerEmail || null,
+            createdAt: new Date().toISOString()
+        });
+        console.log(`[Discovery Reply] ✅ CRM notification created for ${leadName}`);
+        return res.status(200).json({ success: true, classification: classification.category });
+    } catch (error) {
+        console.error('[Discovery Reply] ERROR:', error.message);
+        return res.status(200).send('Error handled');
+    }
+});
+
+// ============================================================
+// END OF DISCOVERY FORM AUTOMATION
+// ============================================================
+
 
 // Export Huskyvoice integrations
 exports.huskyvoiceWebhook = huskyvoiceWebhook;

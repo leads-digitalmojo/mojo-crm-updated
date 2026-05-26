@@ -38,7 +38,7 @@ const safeFormat = (dateInput, formatStr) => {
         const timestamp = getParsedDate(dateInput);
         if (timestamp === 0) return '-';
         return format(new Date(timestamp), formatStr);
-    } catch(e) {
+    } catch (e) {
         return '-';
     }
 };
@@ -52,7 +52,7 @@ const getInIST = (date: Date = new Date()) => {
 
 const getSessionStart = (date: Date) => {
     const ist = getInIST(date);
-    const day = ist.getDay(); 
+    const day = ist.getDay();
     const hour = ist.getHours();
     const min = ist.getMinutes();
     const timeVal = hour * 100 + min;
@@ -77,9 +77,9 @@ const CountdownTimer = ({ dueDate }: { dueDate: Date }) => {
 
     useEffect(() => {
         const calculate = () => {
-             const now = getInIST();
-             const diff = Math.max(0, Math.floor((dueDate.getTime() - now.getTime()) / 1000));
-             setTimeLeft(diff);
+            const now = getInIST();
+            const diff = Math.max(0, Math.floor((dueDate.getTime() - now.getTime()) / 1000));
+            setTimeLeft(diff);
         };
         calculate();
         const interval = setInterval(calculate, 1000);
@@ -99,9 +99,8 @@ const CountdownTimer = ({ dueDate }: { dueDate: Date }) => {
     const secs = timeLeft % 60;
 
     return (
-        <div className={`flex items-center gap-1 font-mono font-bold text-[10px] px-1.5 py-0.5 rounded border ${
-            timeLeft < 60 ? 'bg-orange-50 text-orange-600 border-orange-100 animate-pulse' : 'bg-blue-50 text-blue-600 border-blue-100'
-        }`}>
+        <div className={`flex items-center gap-1 font-mono font-bold text-[10px] px-1.5 py-0.5 rounded border ${timeLeft < 60 ? 'bg-orange-50 text-orange-600 border-orange-100 animate-pulse' : 'bg-blue-50 text-blue-600 border-blue-100'
+            }`}>
             <Clock size={10} />
             <span>{String(mins).padStart(2, '0')}:{String(secs).padStart(2, '0')}</span>
         </div>
@@ -157,22 +156,20 @@ const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete,
                         <div className="flex items-center gap-2 mb-1">
                             <h4 className="font-bold text-gray-900 text-sm line-clamp-2">{item.name}</h4>
                             {item.status && item.status.toLowerCase() !== 'open' && (
-                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0 ${
-                                    item.status === 'Won' ? 'bg-green-100 text-green-700' :
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0 ${item.status === 'Won' ? 'bg-green-100 text-green-700' :
                                     item.status === 'Lost' ? 'bg-red-100 text-red-700' :
-                                    item.status === 'Not Answered' ? 'bg-orange-100 text-orange-700' :
-                                    'bg-blue-100 text-blue-700'
-                                }`}>
+                                        item.status === 'Not Answered' ? 'bg-orange-100 text-orange-700' :
+                                            'bg-blue-100 text-blue-700'
+                                    }`}>
                                     {item.status === 'Not Answered' ? 'N/A' : item.status}
                                 </span>
                             )}
                             {item.aiCallStatus && (
-                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0 flex items-center gap-1 ${
-                                    item.aiCallStatus === 'Scheduled' ? 'bg-purple-100 text-purple-700' :
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0 flex items-center gap-1 ${item.aiCallStatus === 'Scheduled' ? 'bg-purple-100 text-purple-700' :
                                     item.aiCallStatus === 'Completed' ? 'bg-teal-100 text-teal-700' :
-                                    item.aiCallStatus === 'Failed' ? 'bg-red-100 text-red-700' :
-                                    'bg-gray-100 text-gray-700'
-                                }`} title="Huskyvoice AI Status">
+                                        item.aiCallStatus === 'Failed' ? 'bg-red-100 text-red-700' :
+                                            'bg-gray-100 text-gray-700'
+                                    }`} title="Huskyvoice AI Status">
                                     {item.aiCallStatus === 'Scheduled' && <Clock size={10} />}
                                     {item.aiCallStatus === 'Completed' && <Sparkles size={10} />}
                                     {item.aiCallStatus === 'Failed' && <XCircle size={10} />}
@@ -359,7 +356,7 @@ const DroppableColumn = memo<DroppableColumnProps>(({ stage, items, onEdit, onDe
                 {(() => {
                     // Staggering Logic for Stage 16
                     let sessionPoolCounts: Record<string, number> = {};
-                    
+
                     // Sort items by createdAt descending (latest first)
                     const sortedItems = [...items].sort((a, b) => {
                         const dateA = getParsedDate(a.createdAt);
@@ -378,7 +375,7 @@ const DroppableColumn = memo<DroppableColumnProps>(({ stage, items, onEdit, onDe
                             const createdAt = new Date(item.createdAt || Date.now());
                             const sessionStart = getSessionStart(createdAt);
                             const isPooled = sessionStart.getHours() === 10 && sessionStart.getMinutes() === 0;
-                            
+
                             let effectiveStart = sessionStart;
                             if (isPooled) {
                                 const sKey = sessionStart.toISOString();
@@ -390,14 +387,14 @@ const DroppableColumn = memo<DroppableColumnProps>(({ stage, items, onEdit, onDe
                         }
 
                         return (
-                            <DraggableCard 
-                                key={item.id} 
-                                item={item} 
-                                color={stage.color} 
-                                onEdit={onEdit} 
-                                onDelete={onDelete} 
+                            <DraggableCard
+                                key={item.id}
+                                item={item}
+                                color={stage.color}
+                                onEdit={onEdit}
+                                onDelete={onDelete}
                                 nextAppointment={apt}
-                                effectiveDueDate={effectiveDueDate} 
+                                effectiveDueDate={effectiveDueDate}
                             />
                         );
                     });
@@ -420,7 +417,7 @@ DroppableColumn.displayName = 'DroppableColumn';
 const AnalyticsDashboard = ({ opportunities, stages }: { opportunities: Opportunity[], stages: any[] }) => {
     const stats = useMemo(() => {
         const teamStats: Record<string, any> = {};
-        
+
         // Initialize stats for all known users
         ADMIN_CONFIG.USERS.forEach(user => {
             teamStats[user.email.toLowerCase()] = {
@@ -435,26 +432,26 @@ const AnalyticsDashboard = ({ opportunities, stages }: { opportunities: Opportun
 
         (opportunities || []).forEach(opp => {
             if (!opp) return; // Guard against null/undefined in array
-            
+
             const assigneeRawValue = (opp.followUpAssignee || opp.owner || '').trim().toLowerCase();
             if (!assigneeRawValue) return;
 
             // Resolve to formal email if it matches name, id, or email in whitelist
-            const userMatch = ADMIN_CONFIG.USERS.find(u => 
-                u.email.toLowerCase() === assigneeRawValue || 
-                u.name.toLowerCase() === assigneeRawValue || 
+            const userMatch = ADMIN_CONFIG.USERS.find(u =>
+                u.email.toLowerCase() === assigneeRawValue ||
+                u.name.toLowerCase() === assigneeRawValue ||
                 (u.id && u.id.toLowerCase() === assigneeRawValue)
             );
-            
+
             const assignee = userMatch ? userMatch.email.toLowerCase() : assigneeRawValue;
 
             if (teamStats[assignee]) {
                 teamStats[assignee].total++;
                 teamStats[assignee].value += (Number(opp.value) || 0);
-                
+
                 const stageData = (stages || []).find(s => s.id === opp.stage);
                 const stageTitle = stageData?.title?.toLowerCase() || '';
-                
+
                 if (stageTitle.includes('won') || stageTitle.includes('closed') || stageTitle.includes('success')) {
                     teamStats[assignee].won++;
                 } else if (stageTitle.includes('lost') || stageTitle.includes('junk') || stageTitle.includes('dead')) {
@@ -562,8 +559,8 @@ const AnalyticsDashboard = ({ opportunities, stages }: { opportunities: Opportun
                                                     {member.total ? Math.round((member.won / member.total) * 100) : 0}%
                                                 </span>
                                                 <div className="w-24 bg-gray-100 h-1.5 rounded-full overflow-hidden">
-                                                    <div 
-                                                        className="bg-brand-blue h-full rounded-full" 
+                                                    <div
+                                                        className="bg-brand-blue h-full rounded-full"
                                                         style={{ width: `${member.total ? (member.won / member.total) * 100 : 0}%` }}
                                                     />
                                                 </div>
@@ -640,14 +637,14 @@ const Opportunities: React.FC = () => {
 
     const handleSalestrailSync = async () => {
         if (isSyncingSalestrail) return;
-        
+
         setIsSyncingSalestrail(true);
         const syncToast = toast.loading('Syncing Salestrail calls... (this may take a few minutes)');
-        
+
         try {
             const manualSync = httpsCallable(functions, 'manualSalestrailSync');
             const result: any = await manualSync();
-            
+
             if (result.data?.success) {
                 const { matches, updated, analyzed } = result.data;
                 let msg = `Sync complete! ${matches} matches, ${updated} leads updated.`;
@@ -669,26 +666,33 @@ const Opportunities: React.FC = () => {
     const currentStageObj = stages.find(s => String(s.id) === String(formData.stage));
     const currentStageId = String(formData.stage || '').trim();
     const currentStageTitle = (currentStageObj?.title || '').toLowerCase();
-    
+
     const isYetToContactUI = currentStageId === '16' || currentStageTitle.includes('yet to contact');
-    const isJunkOrNoBudgetUI = 
-        currentStageId === '0' || 
-        currentStageId === '0.5' || 
-        currentStageTitle.includes('junk') || 
+    const isJunkOrNoBudgetUI =
+        currentStageId === '0' ||
+        currentStageId === '0.5' ||
+        currentStageTitle.includes('junk') ||
         currentStageTitle.includes('no budget');
 
     const handleSendSalesAssets = async () => {
         if (!editingId) return;
-
         if (isSendingAssets) return;
-
         setIsSendingAssets(true);
         const toastId = toast.loading('Sending sales assets sequence...');
-
         try {
             const { sendSalesAssets } = useStore.getState();
             await sendSalesAssets(editingId);
-            toast.success('Sales assets sequence triggered successfully!', { id: toastId });
+
+            // Start discovery form timer automatically
+            try {
+                const sendDiscoveryFn = httpsCallable(functions, 'sendDiscoveryForm');
+                await sendDiscoveryFn({ opportunityId: editingId });
+                console.log('[Discovery Form] Timer started for lead:', editingId);
+            } catch (discoveryErr: any) {
+                console.error('[Discovery Form] Failed to start timer:', discoveryErr.message);
+            }
+
+            toast.success('Sales assets sent! Follow-up will auto-send in 15 mins if form not filled.', { id: toastId });
         } catch (error: any) {
             console.error('Failed to send sales assets:', error);
             toast.error(error.message || 'Failed to send sales assets', { id: toastId });
@@ -963,7 +967,7 @@ const Opportunities: React.FC = () => {
                 if (overId === '0' || overId === '0.5') {
                     try {
                         const stageTitle = overId === '0' ? 'Junk' : 'No Budget';
-                        await updateOpportunity(activeId, { 
+                        await updateOpportunity(activeId, {
                             stage: overId,
                             followUpDate: '' // Clear follow-up date
                         });
@@ -1102,15 +1106,15 @@ const Opportunities: React.FC = () => {
         const currentStage = stages.find(s => String(s.id) === String(formData.stage));
         const stageId = String(formData.stage || '').trim();
         const stageTitle = (currentStage?.title || '').toLowerCase();
-        
-        const isJunkOrNoBudget = 
-            stageId === '0' || 
-            stageId === '0.5' || 
-            stageTitle.includes('junk') || 
+
+        const isJunkOrNoBudget =
+            stageId === '0' ||
+            stageId === '0.5' ||
+            stageTitle.includes('junk') ||
             stageTitle.includes('no budget');
-            
-        const isYetToContact = 
-            stageId === '16' || 
+
+        const isYetToContact =
+            stageId === '16' ||
             stageTitle.includes('yet to contact');
 
         if (!formData.followUpAssignee && !isJunkOrNoBudget) {
@@ -1732,11 +1736,10 @@ const Opportunities: React.FC = () => {
                             <button
                                 key={s.label}
                                 onClick={() => setFilters(prev => ({ ...prev, status: s.value }))}
-                                className={`px-3 py-1.5 rounded text-xs font-bold whitespace-nowrap transition-colors ${
-                                    filters.status === s.value 
-                                        ? 'bg-brand-blue text-white' 
-                                        : 'text-gray-500 hover:bg-gray-50'
-                                }`}
+                                className={`px-3 py-1.5 rounded text-xs font-bold whitespace-nowrap transition-colors ${filters.status === s.value
+                                    ? 'bg-brand-blue text-white'
+                                    : 'text-gray-500 hover:bg-gray-50'
+                                    }`}
                             >
                                 {s.label}
                             </button>
@@ -2106,8 +2109,8 @@ const Opportunities: React.FC = () => {
                                             {opp.status && (
                                                 <div className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${opp.status === 'Won' ? 'bg-green-100 text-green-700' :
                                                     opp.status === 'Lost' ? 'bg-red-100 text-red-700' :
-                                                    opp.status === 'Not Answered' ? 'bg-orange-100 text-orange-700' :
-                                                    'bg-blue-100 text-blue-700'
+                                                        opp.status === 'Not Answered' ? 'bg-orange-100 text-orange-700' :
+                                                            'bg-blue-100 text-blue-700'
                                                     }`}>
                                                     {opp.status}
                                                 </div>
@@ -2267,13 +2270,13 @@ const Opportunities: React.FC = () => {
                                                                         className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
                                                                     />
                                                                 </div>
-                                                                
+
                                                                 {/* Secondary Phone Numbers */}
                                                                 {formData.secondaryPhones?.map((phone, index) => (
                                                                     <div key={index} className="relative mt-2 animate-in fade-in slide-in-from-top-1">
                                                                         <div className="flex justify-between items-center mb-1">
                                                                             <span className="text-[10px] font-medium text-gray-500">Alternative Phone {index + 1}</span>
-                                                                            <button 
+                                                                            <button
                                                                                 onClick={() => {
                                                                                     const newPhones = [...formData.secondaryPhones];
                                                                                     newPhones.splice(index, 1);
@@ -2498,47 +2501,47 @@ const Opportunities: React.FC = () => {
                                                         <hr className="border-gray-100 my-6" />
 
                                                         {/* Follow up Section */}
-                                                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 mt-4">
-                                                        <div className="flex items-center gap-2 mb-4 border-b border-gray-200 pb-2">
-                                                            <div className="p-1.5 bg-brand-blue/10 rounded-md text-brand-blue">
-                                                                <User size={16} />
-                                                            </div>
-                                                            <h3 className="text-sm font-bold text-gray-900">Follow-up Management</h3>
-                                                            <div className="ml-auto text-[10px] font-medium text-gray-500 bg-white px-2 py-1 rounded border border-gray-200">
-                                                                Current User: <span className="text-brand-blue font-bold">{currentUser?.name}</span>
-                                                            </div>
-                                                        </div>
-                                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                                            <div>
-                                                                <label className="block mb-2 text-sm font-medium text-gray-700">Follow up Date {(!isYetToContactUI && !isJunkOrNoBudgetUI) && <span className="text-red-500">*</span>}</label>
-                                                                <div className="relative">
-                                                                    <Calendar size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                                                                    <input
-                                                                        type="date"
-                                                                        placeholder="dd/mm/yyyy"
-                                                                        value={formData.followUpDate}
-                                                                        onChange={e => setFormData({ ...formData, followUpDate: e.target.value })}
-                                                                        onClick={(e) => (e.target as any).showPicker?.()}
-                                                                        className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue cursor-pointer"
-                                                                    />
+                                                        <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 mt-4">
+                                                            <div className="flex items-center gap-2 mb-4 border-b border-gray-200 pb-2">
+                                                                <div className="p-1.5 bg-brand-blue/10 rounded-md text-brand-blue">
+                                                                    <User size={16} />
+                                                                </div>
+                                                                <h3 className="text-sm font-bold text-gray-900">Follow-up Management</h3>
+                                                                <div className="ml-auto text-[10px] font-medium text-gray-500 bg-white px-2 py-1 rounded border border-gray-200">
+                                                                    Current User: <span className="text-brand-blue font-bold">{currentUser?.name}</span>
                                                                 </div>
                                                             </div>
+                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                                                <div>
+                                                                    <label className="block mb-2 text-sm font-medium text-gray-700">Follow up Date {(!isYetToContactUI && !isJunkOrNoBudgetUI) && <span className="text-red-500">*</span>}</label>
+                                                                    <div className="relative">
+                                                                        <Calendar size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                                                                        <input
+                                                                            type="date"
+                                                                            placeholder="dd/mm/yyyy"
+                                                                            value={formData.followUpDate}
+                                                                            onChange={e => setFormData({ ...formData, followUpDate: e.target.value })}
+                                                                            onClick={(e) => (e.target as any).showPicker?.()}
+                                                                            className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue cursor-pointer"
+                                                                        />
+                                                                    </div>
+                                                                </div>
 
-                                                            <div>
-                                                                <label className="block mb-2 text-sm font-medium text-gray-700">Follow up Assignee {(!isYetToContactUI && !isJunkOrNoBudgetUI) && <span className="text-red-500">*</span>}</label>
-                                                                <select
-                                                                    value={formData.followUpAssignee}
-                                                                    onChange={e => setFormData({ ...formData, followUpAssignee: e.target.value })}
-                                                                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
-                                                                >
-                                                                    <option value="">Select Assignee</option>
-                                                                    {TEAM_MEMBERS.map(member => (
-                                                                        <option key={member.email} value={member.email}>{member.name}</option>
-                                                                    ))}
-                                                                </select>
+                                                                <div>
+                                                                    <label className="block mb-2 text-sm font-medium text-gray-700">Follow up Assignee {(!isYetToContactUI && !isJunkOrNoBudgetUI) && <span className="text-red-500">*</span>}</label>
+                                                                    <select
+                                                                        value={formData.followUpAssignee}
+                                                                        onChange={e => setFormData({ ...formData, followUpAssignee: e.target.value })}
+                                                                        className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
+                                                                    >
+                                                                        <option value="">Select Assignee</option>
+                                                                        {TEAM_MEMBERS.map(member => (
+                                                                            <option key={member.email} value={member.email}>{member.name}</option>
+                                                                        ))}
+                                                                    </select>
+                                                                </div>
                                                             </div>
                                                         </div>
-                                                    </div>
                                                     </div>
                                                 </section>
                                             </>
@@ -2641,7 +2644,7 @@ const Opportunities: React.FC = () => {
                                                     <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
                                                         Discovery Form Responses <Search size={18} className="text-gray-400" />
                                                     </h3>
-                                                    <button 
+                                                    <button
                                                         onClick={() => fetchDiscoveryResponses(formData.contactPhone)}
                                                         className="text-xs text-brand-blue hover:bg-blue-50 px-3 py-1.5 rounded-lg flex items-center gap-1.5 font-bold transition-all"
                                                     >
@@ -2678,7 +2681,7 @@ const Opportunities: React.FC = () => {
                                                                 {/* AI ANALYSIS SECTION */}
                                                                 <div className="px-8 pt-6">
                                                                     {!response.aiAnalysis ? (
-                                                                        <button 
+                                                                        <button
                                                                             onClick={() => handleAnalyzeDiscovery(response)}
                                                                             disabled={isAnalyzingDiscovery[response.id]}
                                                                             className="w-full py-4 bg-gradient-to-r from-brand-blue/5 to-indigo-500/10 border-2 border-dashed border-brand-blue/20 rounded-2xl flex flex-col items-center justify-center gap-2 hover:border-brand-blue/40 hover:from-brand-blue/10 hover:to-indigo-500/20 transition-all group"
@@ -2704,7 +2707,7 @@ const Opportunities: React.FC = () => {
                                                                                 <Sparkles size={18} />
                                                                                 <h4 className="font-black text-xs uppercase tracking-widest">AI Intelligence Report</h4>
                                                                             </div>
-                                                                            
+
                                                                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                                                                                 <div className="space-y-4">
                                                                                     <div>
@@ -2718,7 +2721,7 @@ const Opportunities: React.FC = () => {
                                                                                         </div>
                                                                                     </div>
                                                                                 </div>
-                                                                                
+
                                                                                 <div className="space-y-4">
                                                                                     <div>
                                                                                         <label className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-1 block">Key Talking Points</label>
@@ -2776,7 +2779,7 @@ const Opportunities: React.FC = () => {
                                                     {(() => {
                                                         const currentOpp = opportunities.find(o => o.id === editingId);
                                                         const activities = currentOpp?.activities || [];
-                                                        
+
                                                         if (activities.length === 0) {
                                                             return <p className="text-sm text-gray-500 italic">No activity recorded yet.</p>;
                                                         }
@@ -2785,16 +2788,15 @@ const Opportunities: React.FC = () => {
                                                             <div key={activity.id} className="relative">
                                                                 {/* Timeline Dot */}
                                                                 <div className="absolute -left-[41px] top-1 w-4 h-4 rounded-full border-2 border-white bg-brand-blue shadow-sm z-10" />
-                                                                
+
                                                                 <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
                                                                     <div className="flex justify-between items-start mb-2">
-                                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
-                                                                            activity.type === 'stage_change' ? 'bg-purple-100 text-purple-700' :
+                                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${activity.type === 'stage_change' ? 'bg-purple-100 text-purple-700' :
                                                                             activity.type === 'status_change' ? 'bg-green-100 text-green-700' :
-                                                                            activity.type === 'note_added' ? 'bg-orange-100 text-orange-700' :
-                                                                            activity.type === 'task_added' ? 'bg-blue-100 text-blue-700' :
-                                                                            'bg-gray-200 text-gray-700'
-                                                                        }`}>
+                                                                                activity.type === 'note_added' ? 'bg-orange-100 text-orange-700' :
+                                                                                    activity.type === 'task_added' ? 'bg-blue-100 text-blue-700' :
+                                                                                        'bg-gray-200 text-gray-700'
+                                                                            }`}>
                                                                             {activity.type.replace('_', ' ')}
                                                                         </span>
                                                                         <span className="text-[10px] text-gray-500 font-medium">
@@ -3321,7 +3323,7 @@ const Opportunities: React.FC = () => {
                                                                     </div>
                                                                 ) : (
                                                                     <div className="space-y-3">
-                                                                        {[...currentOpp.calls].sort((a,b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime()).map((call, idx) => (
+                                                                        {[...currentOpp.calls].sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime()).map((call, idx) => (
                                                                             <div key={call.id || idx} className="p-4 bg-white border border-gray-200 rounded-xl hover:shadow-md transition-all group">
                                                                                 <div className="flex flex-col gap-3">
                                                                                     <div className="flex justify-between items-start">
@@ -3332,12 +3334,11 @@ const Opportunities: React.FC = () => {
                                                                                             <div>
                                                                                                 <div className="flex items-center gap-2 mb-1">
                                                                                                     <span className="text-sm font-bold text-gray-900">{call.userName}</span>
-                                                                                                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
-                                                                                                        (call.status === 'Completed' || (call.answered && !call.status)) ? 'bg-green-100 text-green-700' : 
+                                                                                                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${(call.status === 'Completed' || (call.answered && !call.status)) ? 'bg-green-100 text-green-700' :
                                                                                                         (call.status === 'Missed Call') ? 'bg-red-100 text-red-700' :
-                                                                                                        (call.status === 'Not Answered') ? 'bg-orange-100 text-orange-700' :
-                                                                                                        'bg-red-100 text-red-700'
-                                                                                                    }`}>
+                                                                                                            (call.status === 'Not Answered') ? 'bg-orange-100 text-orange-700' :
+                                                                                                                'bg-red-100 text-red-700'
+                                                                                                        }`}>
                                                                                                         {call.status || (call.answered ? 'Answered' : 'Missed')}
                                                                                                     </span>
                                                                                                 </div>
@@ -3354,15 +3355,15 @@ const Opportunities: React.FC = () => {
                                                                                             </div>
                                                                                         </div>
                                                                                     </div>
-                                                                                                                                                    {call.recordingUrl && (
+                                                                                    {call.recordingUrl && (
                                                                                         <div className="mt-2 p-3 bg-gray-50 rounded-lg border border-gray-200 flex items-center gap-3">
                                                                                             <div className="w-8 h-8 rounded-full bg-brand-blue/10 flex items-center justify-center text-brand-blue">
                                                                                                 <Volume2 size={16} />
                                                                                             </div>
                                                                                             <div className="flex-1">
-                                                                                                <audio 
-                                                                                                    controls 
-                                                                                                    src={`https://us-central1-crm1-76cc4.cloudfunctions.net/getRecordingAudio?url=${encodeURIComponent(call.recordingUrl)}`} 
+                                                                                                <audio
+                                                                                                    controls
+                                                                                                    src={`https://us-central1-crm1-76cc4.cloudfunctions.net/getRecordingAudio?url=${encodeURIComponent(call.recordingUrl)}`}
                                                                                                     className="w-full h-8 accent-brand-blue"
                                                                                                 />
                                                                                             </div>
@@ -3374,7 +3375,7 @@ const Opportunities: React.FC = () => {
                                                                                             <div className="absolute top-0 right-0 p-2 opacity-10 group-hover/ai:opacity-20 transition-opacity">
                                                                                                 <TrendingUp size={64} className="text-brand-blue" />
                                                                                             </div>
-                                                                                            
+
                                                                                             <div className="flex items-center justify-between mb-3">
                                                                                                 <div className="flex items-center gap-2">
                                                                                                     <div className="p-1.5 bg-brand-blue text-white rounded-lg shadow-sm">
@@ -3382,11 +3383,10 @@ const Opportunities: React.FC = () => {
                                                                                                     </div>
                                                                                                     <span className="text-xs font-bold text-brand-blue uppercase tracking-wider">AI Call Insight</span>
                                                                                                 </div>
-                                                                                                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-white font-bold text-sm shadow-sm ${
-                                                                                                    call.aiAnalysis.rating >= 8 ? 'bg-green-500' :
+                                                                                                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-white font-bold text-sm shadow-sm ${call.aiAnalysis.rating >= 8 ? 'bg-green-500' :
                                                                                                     call.aiAnalysis.rating >= 5 ? 'bg-orange-500' :
-                                                                                                    'bg-red-500'
-                                                                                                }`}>
+                                                                                                        'bg-red-500'
+                                                                                                    }`}>
                                                                                                     <Award size={14} />
                                                                                                     {call.aiAnalysis.rating}/10
                                                                                                 </div>
