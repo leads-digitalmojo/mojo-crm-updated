@@ -315,14 +315,15 @@ async function analyzeCallWithGemini(audioUrl, leadName = "Unknown") {
         return null;
     }
 
-    const prompt = `You are an expert sales coach. You follow methodologies of Zig Ziglar in sales. You will listen into the call and rate it on a scale of 1-10. What needs to be analysed is how the team member is performing. It has to correlate with a 20+ years sales expert. Like showcasing pain behind the pain. Providing solution, dealing with objection handling. If they are lukewarm with follow up calls like I just called to follow up then rank them lower.Analyze this call recording and provide a JSON response with:
+    const prompt = `You are an expert sales coach. You follow methodologies of Zig Ziglar in sales. You will listen into the call and rate it on a scale of 1-10. What needs to be analysed is how the team member is performing. It has to correlate with a 20+ years sales expert. Like showcasing pain behind the pain. Providing solution, dealing with objection handling. If they are lukewarm with follow up calls like I just called to follow up then rank them lower. Be strict but fair. A rating of 8+ means they performed like a seasoned closer. A rating below 5 means fundamental skills need work. If they opened with "I just called to follow up" or similar weak openers, rate them lower. Analyze this call recording and provide a JSON response with:
     {
         "rating": number (1-10),
-        "summary": "a short 1-sentence catchy summary of the call",
-        "goodFeatures": ["point 1", "point 2"],
-        "improvements": ["point 1", "point 2"]
+        "summary": "A single punchy sentence that captures the essence of how this call went AND hints at why the rating was given — like a headline",
+        "goodFeatures": ["Specific thing they did well with example from the call", "Another specific strength", "Third strength if applicable"],
+        "improvements": ["Most critical thing to fix with specific suggestion", "Second improvement area with actionable advice", "Third improvement if needed"],
+        "failureReasons": "If rating is below 6, explain in 2-3 sentences exactly why they failed and what specific moments in the call brought the rating down. If rating is 6 or above leave this as null."
     }
-    Format your response as a valid JSON object only. No markdown.`;
+    Be specific — reference actual moments from the call. Format your response as a valid JSON object only. No markdown.`;
 
     // Standard verified models for multimodal (audio) support
     const modelsToTry = [
