@@ -349,6 +349,14 @@ export const mockApi = {
       }
 
       return { updated: updatedCount };
+    },
+    clearLeadsByStage: async (stageId: string) => {
+      await delay(500);
+      const opportunities = getStoredData<Opportunity>('demo_opportunities', []);
+      const toRemove = opportunities.filter(o => o.stage === stageId);
+      const filtered = opportunities.filter(o => o.stage !== stageId);
+      saveStoredData('demo_opportunities', filtered);
+      return { success: true, removed: toRemove.length };
     }
   },
   appointments: {
