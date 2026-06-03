@@ -908,6 +908,205 @@ exports.whatsappWebhook = functions.runWith({ timeoutSeconds: 60, memory: '512MB
 });
 
 /**
+ * Webhook to receive leads from Meta (Facebook/Instagram Lead Ads).
+ */
+exports.metaLeadWebhook = functions.runWith({ timeoutSeconds: 60, memory: '256MB' }).region('us-central1').https.onRequest(async (req, res) => {
+    const axios = require('axios');
+    const db = getDb();
+    
+    // Webhook verification setup for Meta
+    if (req.method === 'GET') {
+        const mode = req.query['hub.mode'];
+        const token = req.query['hub.verify_token'];
+        const challenge = req.query['hub.challenge'];
+
+        const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || 'mojo_meta_webhook_123';
+
+        if (mode && token) {
+            if (mode === 'subscribe' && token === META_VERIFY_TOKEN) {
+                console.log('[Meta Webhook] WEBHOOK_VERIFIED');
+                return res.status(200).send(challenge);
+            } else {
+                return res.sendStatus(403);
+            }
+        }
+        return res.sendStatus(400);
+    }
+
+    if (req.method !== 'POST') {
+        return res.status(405).send('Method Not Allowed');
+    }
+
+    try {
+        const payload = req.body;
+        console.log(`[Meta Webhook] RAW PAYLOAD: ${JSON.stringify(payload)}`);
+
+        if (payload.object !== 'page') {
+            return res.status(404).send('Not Found');
+        }
+
+        const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
+        if (!META_ACCESS_TOKEN) {
+            console.error('[Meta Webhook] META_ACCESS_TOKEN is not set.');
+            // Still return 200 so Meta doesn't retry infinitely if we're misconfigured
+            return res.status(200).send('Misconfigured');
+        }
+
+        // Meta can batch events
+        for (const entry of payload.entry) {
+            if (!entry.changes) continue;
+            
+            for (const change of entry.changes) {
+                if (change.field !== 'leadgen') continue;
+
+                const leadgenId = change.value.leadgen_id;
+                console.log(`[Meta Webhook] Processing leadgen_id: ${leadgenId}`);
+
+                // Idempotency: skip if already processed
+                const processedRef = db.collection('processed_meta_leads').doc(leadgenId);
+                const processedDoc = await processedRef.get();
+                if (processedDoc.exists) {
+                    console.log(`[Meta Webhook] Skip - leadgen_id ${leadgenId} already processed.`);
+                    continue;
+                }
+
+                await processedRef.set({
+                    processedAt: new Date().toISOString(),
+                    status: 'processing'
+                });
+
+                // Fetch lead details from Graph API
+                let leadDetails;
+                try {
+                    const response = await axios.get(`https://graph.facebook.com/v19.0/${leadgenId}?access_token=${META_ACCESS_TOKEN}`);
+                    leadDetails = response.data;
+                } catch (error) {
+                    console.error(`[Meta Webhook] Error fetching lead ${leadgenId}:`, error.response?.data || error.message);
+                    await processedRef.update({ status: 'failed', error: error.message });
+                    continue;
+                }
+
+                // Extract fields (Meta uses name/value pairs in field_data)
+                let fullName = 'Unknown Meta Lead';
+                let phone = '';
+                let email = '';
+                let companyName = '';
+                let website = '';
+                let customNotes = [];
+                
+                if (leadDetails.field_data) {
+                    for (const field of leadDetails.field_data) {
+                        const val = field.values[0];
+                        if (field.name === 'full_name' || field.name === 'name') {
+                            fullName = val;
+                        } else if (field.name === 'first_name') {
+                            if (fullName === 'Unknown Meta Lead') fullName = val;
+                            else fullName = val + ' ' + fullName;
+                        } else if (field.name === 'last_name') {
+                            if (fullName === 'Unknown Meta Lead') fullName = val;
+                            else fullName = fullName + ' ' + val;
+                        } else if (field.name === 'phone_number' || field.name === 'work_phone_number') {
+                            phone = val;
+                        } else if (field.name === 'email' || field.name === 'work_email') {
+                            email = val;
+                        } else if (field.name === 'company_name') {
+                            companyName = val;
+                        } else if (field.name === 'website' || field.name === 'your_website') {
+                            website = val;
+                        } else {
+                            // Add mapping for custom questions if needed
+                            customNotes.push(`${field.name}: ${val}`);
+                        }
+                    }
+                }
+                
+                const normalizedPhoneValue = normalizePhone(phone);
+                
+                // Deduplication
+                if (normalizedPhoneValue) {
+                    const existingSnapshot = await db.collection('opportunities')
+                        .where('phone', '==', normalizedPhoneValue)
+                        .limit(1)
+                        .get();
+                        
+                    if (!existingSnapshot.empty) {
+                        console.log(`[Meta Webhook] Skip - Lead with phone ${normalizedPhoneValue} already exists.`);
+                        await processedRef.update({
+                            status: 'duplicate_skipped',
+                            leadId: existingSnapshot.docs[0].id
+                        });
+                        continue;
+                    }
+                }
+                
+                // Assign
+                const { name: assignedName, email: assignedTo } = await getNextAssignee();
+                
+                // Create Lead
+                const opportunityData = {
+                    name: fullName,
+                    contactName: fullName,
+                    contactPhone: normalizedPhoneValue,
+                    contactEmail: email,
+                    phone: normalizedPhoneValue,
+                    secondaryPhones: [],
+                    companyName: companyName,
+                    value: 0,
+                    budget: '',
+                    your_website: website,
+                    country: null,
+                    source: 'Meta',
+                    stage: '16', // assuming this is a default new lead stage
+                    status: 'Open',
+                    owner: assignedTo,
+                    followUpAssignee: assignedTo,
+                    isAIPending: false,
+                    tags: ['meta', `Form: ${change.value.form_id || 'Unknown'}`],
+                    tasks: [],
+                    notes: [
+                        {
+                            id: Date.now().toString(),
+                            content: `Lead captured from Meta Lead Ad (Ad ID: ${change.value.ad_id || 'Unknown'})` + (customNotes.length > 0 ? `\n\nForm Responses:\n${customNotes.join('\n')}` : ''),
+                            createdAt: new Date().toISOString()
+                        }
+                    ],
+                    followUpDate: '',
+                    followUpRead: false,
+                    deadlineNotified: false,
+                    assignmentNotified: false,
+                    redFlagSent: false,
+                    urgentAlertSent: false,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                    activities: [{
+                        id: Date.now().toString(),
+                        type: 'status_change',
+                        description: `Lead created via Meta Webhook`,
+                        timestamp: new Date().toISOString(),
+                        userName: 'Meta Automation'
+                    }]
+                };
+
+                const docRef = await db.collection('opportunities').add(opportunityData);
+                console.log(`[Meta Webhook] ✅ Created lead ${docRef.id} for ${fullName} (Assigned to: ${assignedName})`);
+                
+                await processedRef.update({
+                    status: 'completed',
+                    leadId: docRef.id,
+                    completedAt: new Date().toISOString()
+                });
+            }
+        }
+
+        return res.status(200).send('EVENT_RECEIVED');
+
+    } catch (error) {
+        console.error('[Meta Webhook] ERROR:', error.message);
+        return res.status(500).send('Internal Server Error');
+    }
+});
+
+/**
  * Scheduled function to check for lead follow-up deadlines and new assignments every 10 minutes
  */
 exports.deadlineAlerts = functions.pubsub.schedule('every 10 minutes').onRun(async (context) => {
