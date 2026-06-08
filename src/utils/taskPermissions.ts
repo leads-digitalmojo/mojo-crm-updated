@@ -5,12 +5,7 @@ export const canToggleTaskCompletion = (
     userId?: string,
     userEmail?: string
 ) => {
-    if (!task || !userId && !userEmail) return false;
-
-    return (
-        task.assignee === userId ||
-        task.assignee === userEmail
-    );
+    return true; // Allow any logged-in user to complete tasks
 };
 
 export const canEditTask = canToggleTaskCompletion;

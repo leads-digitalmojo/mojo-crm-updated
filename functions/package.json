@@ -19,6 +19,7 @@
     "dotenv": "^17.4.1",
     "firebase-admin": "^13.1.0",
     "firebase-functions": "^7.2.5",
-    "music-metadata": "^10.0.0"
+    "music-metadata": "^10.0.0",
+    "resend": "^6.12.4"
   }
 }

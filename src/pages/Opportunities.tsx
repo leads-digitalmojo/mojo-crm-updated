@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import Papa from 'papaparse';
-import { Plus, MoreHorizontal, X, Trash2, LayoutGrid, List as ListIcon, Search, Filter, Download, ChevronDown, User, Phone, Mail, Tag, CheckSquare, MessageSquare, Clock, ArrowUpDown, Calendar, Edit2, Target, BarChart, XCircle, TrendingUp, Users, Save, PhoneIncoming, PhoneOutgoing, Timer, RefreshCw, Play, Volume2, Zap, Award, Sparkles } from 'lucide-react';
+import { Plus, MoreHorizontal, X, Trash2, LayoutGrid, List as ListIcon, Search, Filter, Download, ChevronDown, User, Phone, Mail, Tag, CheckSquare, MessageSquare, Clock, ArrowUpDown, Calendar, Edit2, Target, BarChart, XCircle, TrendingUp, Users, Save, PhoneIncoming, PhoneOutgoing, Timer, RefreshCw, Play, Volume2, Zap, Award, Sparkles, Star } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../lib/firebase';
 import { useStore } from '../store/useStore';
@@ -10,6 +10,7 @@ import { Modal } from '../components/Modal';
 import { Opportunity, Task, Note, OpportunityActivity, Appointment } from '../types';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
+import { useSearchParams } from 'react-router-dom';
 
 
 import { canEditTask, canDeleteTask, canToggleTaskCompletion } from '../utils/taskPermissions';
@@ -116,9 +117,11 @@ interface DraggableCardProps {
     onDelete: (id: string) => void;
     nextAppointment?: { date: string; time: string; title: string };
     effectiveDueDate?: Date;
+    onScoreSingleLead?: (e: React.MouseEvent, leadId: string) => void;
+    isScoring?: boolean;
 }
 
-const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete, nextAppointment, effectiveDueDate }) => {
+const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete, nextAppointment, effectiveDueDate, onScoreSingleLead, isScoring }) => {
     const { stages } = useStore();
     const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
         id: item.id,
@@ -135,6 +138,18 @@ const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete,
             onEdit(item);
         }
     };
+
+    let displayStatus = item.status;
+    const stageName = stages.find(s => s.id === item.stage)?.title?.toLowerCase() || '';
+    if (stageName.includes('junk') || stageName.includes('no budget') || stageName.includes('dead')) {
+        displayStatus = 'Abandoned';
+    } else if (stageName.includes('won') || stageName.includes('closed') || stageName.includes('success')) {
+        displayStatus = 'Won';
+    } else if (!displayStatus || displayStatus === 'Not Answered') {
+        // preserve other statuses
+    } else if (displayStatus !== 'Lost') { // Don't override explicit Lost if not matching above
+        displayStatus = 'Open';
+    }
 
     return (
         <div
@@ -156,14 +171,14 @@ const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete,
                     <div className="flex flex-col">
                         <div className="flex items-center gap-2 mb-1">
                             <h4 className="font-bold text-gray-900 text-sm line-clamp-2">{item.name}</h4>
-                            {item.status && item.status.toLowerCase() !== 'open' && (
+                            {displayStatus && displayStatus.toLowerCase() !== 'open' && (
                                 <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0 ${
-                                    item.status === 'Won' ? 'bg-green-100 text-green-700' :
-                                    item.status === 'Lost' ? 'bg-red-100 text-red-700' :
-                                    item.status === 'Not Answered' ? 'bg-orange-100 text-orange-700' :
+                                    displayStatus === 'Won' ? 'bg-green-100 text-green-700' :
+                                    (displayStatus === 'Lost' || displayStatus === 'Abandoned') ? 'bg-red-100 text-red-700' :
+                                    displayStatus === 'Not Answered' ? 'bg-orange-100 text-orange-700' :
                                     'bg-blue-100 text-blue-700'
                                 }`}>
-                                    {item.status === 'Not Answered' ? 'N/A' : item.status}
+                                    {displayStatus === 'Not Answered' ? 'N/A' : displayStatus}
                                 </span>
                             )}
                             {item.aiCallStatus && (
@@ -178,6 +193,30 @@ const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete,
                                     {item.aiCallStatus === 'Failed' && <XCircle size={10} />}
                                     AI: {item.aiCallStatus}
                                 </span>
+                            )}
+                            {item.winLossAnalysis?.isPotentialLead && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0 flex items-center gap-1 bg-indigo-100 text-indigo-800" title="Identified as Potential Revival by AI">
+                                    <Star size={10} />
+                                    Potential
+                                </span>
+                            )}
+                            {item.aiPotentialScore !== undefined ? (
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0 flex items-center gap-1 ${item.aiPotentialScore >= 80 ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-700'}`} title={`AI Score: ${item.aiPotentialScore} - ${item.potentialReason || ''}`}>
+                                    <Star size={10} className={item.aiPotentialScore >= 80 ? 'fill-yellow-500 text-yellow-500' : 'text-gray-500'} />
+                                    {item.aiPotentialScore >= 80 ? 'High Potential' : 'Score'}: {item.aiPotentialScore}
+                                </span>
+                            ) : (
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onScoreSingleLead && onScoreSingleLead(e, item.id);
+                                    }}
+                                    disabled={isScoring}
+                                    className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0 flex items-center gap-1 bg-blue-100 text-blue-800 hover:bg-blue-200 transition-colors disabled:opacity-50"
+                                >
+                                    {isScoring ? <div className="w-2.5 h-2.5 border-2 border-blue-800 border-t-transparent rounded-full animate-spin"></div> : <Star size={10} />}
+                                    Score
+                                </button>
                             )}
                         </div>
                         <div className="flex items-center gap-2 mt-1">
@@ -304,9 +343,11 @@ interface DroppableColumnProps {
     totalCount: number;
     totalValue: number;
     appointments?: Appointment[];
+    onScoreSingleLead?: (e: React.MouseEvent, leadId: string) => void;
+    scoringLeads?: Set<string>;
 }
 
-const DroppableColumn = memo<DroppableColumnProps>(({ stage, items, onEdit, onDelete, hasMore, onLoadMore, isLoading, totalCount, totalValue, appointments }) => {
+const DroppableColumn = memo<DroppableColumnProps>(({ stage, items, onEdit, onDelete, hasMore, onLoadMore, isLoading, totalCount, totalValue, appointments, onScoreSingleLead, scoringLeads }) => {
     const { setNodeRef } = useDroppable({
         id: stage.id,
     });
@@ -398,6 +439,8 @@ const DroppableColumn = memo<DroppableColumnProps>(({ stage, items, onEdit, onDe
                                 onDelete={onDelete} 
                                 nextAppointment={apt}
                                 effectiveDueDate={effectiveDueDate} 
+                                onScoreSingleLead={onScoreSingleLead}
+                                isScoring={scoringLeads?.has(item.id)}
                             />
                         );
                     });
@@ -584,7 +627,47 @@ const AnalyticsDashboard = ({ opportunities, stages }: { opportunities: Opportun
 };
 
 const Opportunities: React.FC = () => {
+    const [searchParams, setSearchParams] = useSearchParams();
     const { opportunities, appointments, stages, stageCounts, stagePagination, fetchOpportunities, fetchOpportunitiesByStage, loadMoreByStage, fetchStageCounts, updateOpportunity, addOpportunity, deleteOpportunity, bulkDeleteOpportunities, updateStages, currentUser, addAppointment, fetchAppointments, contacts, fetchContacts, addContact, updateContact, deleteContact, hasMoreOpportunities, loadMoreOpportunities, isLoading, discoveryResponses, fetchDiscoveryResponses } = useStore();
+    const [isAnalyzingPotential, setIsAnalyzingPotential] = useState(false);
+    const [scoringLeads, setScoringLeads] = useState<Set<string>>(new Set());
+
+    const handleScoreSingleLead = async (e: React.MouseEvent, leadId: string) => {
+        e.stopPropagation();
+        if (scoringLeads.has(leadId)) return;
+        
+        setScoringLeads(prev => {
+            const next = new Set(prev);
+            next.add(leadId);
+            return next;
+        });
+        
+        try {
+            const analyzeFn = httpsCallable(functions, 'analyzeSingleLeadPotential');
+            const result = await analyzeFn({ leadId });
+            const data = result.data as any;
+            
+            if (data.success) {
+                toast.success('Lead scored successfully');
+                await updateOpportunity(leadId, {
+                    aiPotentialScore: data.score,
+                    isHighPotential: data.score >= 80,
+                    potentialReason: data.reason
+                });
+            } else {
+                toast.error(data.error || 'Failed to score lead');
+            }
+        } catch (error: any) {
+            console.error('Error scoring lead:', error);
+            toast.error(error.message || 'Failed to score lead');
+        } finally {
+            setScoringLeads(prev => {
+                const next = new Set(prev);
+                next.delete(leadId);
+                return next;
+            });
+        }
+    };
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isPipelineModalOpen, setIsPipelineModalOpen] = useState(false);
     const [viewMode, setViewMode] = useState<'board' | 'list' | 'analytics'>('board');
@@ -612,6 +695,8 @@ const Opportunities: React.FC = () => {
         followUpDate: '',
         opportunityType: '',
         followUpAssignee: '',
+        meta_campaign: '',
+        meta_adset: '',
         secondaryPhones: [] as string[]
     });
 
@@ -765,7 +850,11 @@ const Opportunities: React.FC = () => {
         stage: [] as string[],
         status: '',
         opportunityType: '',
-        selectedMonth: ''
+        selectedMonth: '',
+        assignee: '',
+        source: '',
+        meta_campaign: '',
+        meta_adset: ''
     });
 
     const getStageRank = (title: string) => {
@@ -933,6 +1022,28 @@ const Opportunities: React.FC = () => {
                 }
             }
             const matchesMonth = filters.selectedMonth ? (createdAtStr.startsWith(filters.selectedMonth)) : true;
+            let matchesAssignee = true;
+            if (filters.assignee) {
+                const targetMember = ADMIN_CONFIG.USERS.find(m => 
+                    m.name.toLowerCase() === filters.assignee.toLowerCase() || 
+                    m.email.toLowerCase() === filters.assignee.toLowerCase()
+                );
+                
+                const raw1 = (opp.followUpAssignee || '').trim().toLowerCase();
+                const raw2 = (opp.owner || '').trim().toLowerCase();
+                
+                if (targetMember) {
+                    matchesAssignee = 
+                        raw1 === targetMember.email.toLowerCase() || 
+                        raw1 === targetMember.name.toLowerCase() || 
+                        raw1 === targetMember.id.toLowerCase() ||
+                        raw2 === targetMember.email.toLowerCase() || 
+                        raw2 === targetMember.name.toLowerCase() || 
+                        raw2 === targetMember.id.toLowerCase();
+                } else {
+                    matchesAssignee = raw1 === filters.assignee.toLowerCase() || raw2 === filters.assignee.toLowerCase();
+                }
+            }
             // Lead Filter Logic
             const matchesLeadFilter = leadFilter === 'assigned'
                 ? (opp.followUpAssignee === currentUser?.id || opp.followUpAssignee === currentUser?.email)
@@ -940,9 +1051,13 @@ const Opportunities: React.FC = () => {
                     ? (!opp.owner || opp.owner.trim() === '') && (!opp.followUpAssignee || opp.followUpAssignee.trim() === '')
                     : true;
 
-            return matchesSearch && matchesStage && matchesStatus && matchesType && matchesMonth && matchesLeadFilter;
+            const matchesSource = !filters.source || (opp.source || '').toLowerCase().includes(filters.source.toLowerCase());
+            const matchesCampaign = !filters.meta_campaign || (opp.meta_campaign || '').toLowerCase().includes(filters.meta_campaign.toLowerCase());
+            const matchesAdset = !filters.meta_adset || (opp.meta_adset || '').toLowerCase().includes(filters.meta_adset.toLowerCase());
+
+            return matchesSearch && matchesStage && matchesStatus && matchesType && matchesMonth && matchesAssignee && matchesLeadFilter && matchesSource && matchesCampaign && matchesAdset;
         }).sort(sortOpps);
-    }, [opportunities, searchTerm, filters.stage, filters.status, filters.opportunityType, filters.selectedMonth, sortOrder, sortBy, stages, viewMode, leadFilter]);
+    }, [opportunities, searchTerm, filters.stage, filters.status, filters.opportunityType, filters.selectedMonth, filters.assignee, filters.source, sortOrder, sortBy, stages, viewMode, leadFilter]);
 
     const handleDragEnd = async (event: DragEndEvent) => {
         const { active, over } = event;
@@ -965,6 +1080,7 @@ const Opportunities: React.FC = () => {
                         const stageTitle = overId === '0' ? 'Junk' : 'No Budget';
                         await updateOpportunity(activeId, { 
                             stage: overId,
+                            status: 'Abandoned',
                             followUpDate: '' // Clear follow-up date
                         });
                         toast.success(`Lead moved to ${stageTitle}`);
@@ -1060,6 +1176,8 @@ const Opportunities: React.FC = () => {
                 followUpDate: (isActuallyChanging && !isTargetExempt) ? '' : (opp.followUpDate || ''),
                 opportunityType: opp.opportunityType || '',
                 followUpAssignee: opp.followUpAssignee || '',
+                meta_campaign: opp.meta_campaign || '',
+                meta_adset: opp.meta_adset || '',
                 secondaryPhones: opp.secondaryPhones || []
             });
             setTasks(Array.isArray(opp.tasks) ? opp.tasks : []);
@@ -1074,7 +1192,7 @@ const Opportunities: React.FC = () => {
                 contactName: '', contactEmail: '', contactPhone: '', companyName: '',
                 your_website: '', budget: '',
                 tags: '', calendar: '', contactValue: 'Standard', followUpDate: '',
-                opportunityType: '', followUpAssignee: '', secondaryPhones: []
+                opportunityType: '', followUpAssignee: '', meta_campaign: '', meta_adset: '', secondaryPhones: []
             });
             setTasks([]);
             setNotes([]);
@@ -1083,6 +1201,18 @@ const Opportunities: React.FC = () => {
         setActiveTab('details');
         setIsModalOpen(true);
     };
+
+    useEffect(() => {
+        const oppId = searchParams.get('oppId');
+        if (oppId && opportunities.length > 0 && !isModalOpen) {
+            const opp = opportunities.find(o => o.id === oppId);
+            if (opp) {
+                handleOpenModal(opp);
+                // Clean up URL so it doesn't reopen on every refresh
+                setSearchParams(new URLSearchParams());
+            }
+        }
+    }, [searchParams, opportunities, isModalOpen]);
 
     const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -1163,6 +1293,29 @@ const Opportunities: React.FC = () => {
         // Detect if assignee changed to trigger a new notification
         const isNewAssignment = !editingId || (existingOpp && existingOpp.followUpAssignee !== formData.followUpAssignee);
 
+        let finalTasks = [...tasks];
+        let finalNotes = [...notes];
+
+        if (editingId && isNewAssignment && existingOpp?.followUpAssignee && formData.followUpAssignee) {
+            const oldAssignee = existingOpp.followUpAssignee;
+            const newAssignee = formData.followUpAssignee;
+            
+            // Migrate incomplete tasks
+            finalTasks = finalTasks.map(task => {
+                if (!task.isCompleted && task.assignee === oldAssignee) {
+                    return { ...task, assignee: newAssignee };
+                }
+                return task;
+            });
+
+            // Add a history note
+            finalNotes.push({
+                id: Date.now().toString(),
+                content: `System: Assignee changed from ${oldAssignee} to ${newAssignee}. Incomplete tasks reassigned.`,
+                createdAt: new Date().toISOString()
+            });
+        }
+
         // Logic to link/create contact
         if (formData.contactName) {
             // 1. Check if contact exists
@@ -1207,6 +1360,19 @@ const Opportunities: React.FC = () => {
             }
         }
 
+        let autoStatus = formData.status || 'Open';
+        const currentStageObj = stages.find(s => String(s.id) === String(formData.stage));
+        if (currentStageObj) {
+            const stageTitle = currentStageObj.title.toLowerCase();
+            if (stageTitle.includes('junk') || stageTitle.includes('no budget') || stageTitle.includes('dead')) {
+                autoStatus = 'Abandoned';
+            } else if (stageTitle.includes('won') || stageTitle.includes('closed') || stageTitle.includes('success')) {
+                autoStatus = 'Won';
+            } else {
+                autoStatus = 'Open';
+            }
+        }
+
         const oppData: any = {
             name: formData.name || 'Website Lead',
             value: Number(formData.value) || 0,
@@ -1221,15 +1387,15 @@ const Opportunities: React.FC = () => {
             tags: formData.tags ? formData.tags.split(',').map(t => t.trim()).filter(t => t !== '') : [],
             contactId: finalContactId || '',
             calendar: formData.calendar || '',
-            status: formData.status || 'Open',
+            status: autoStatus,
             followUpDate: formData.followUpDate || '',
             opportunityType: formData.opportunityType || '',
             followUpAssignee: formData.followUpAssignee || '',
             owner: formData.followUpAssignee || existingOpp?.owner || '', // Sync owner with follow-up assignee
             assignmentNotified: isNewAssignment ? false : (existingOpp?.assignmentNotified ?? false),
             updatedAt: new Date().toISOString(),
-            tasks: tasks || [],
-            notes: notes || [],
+            tasks: finalTasks,
+            notes: finalNotes,
             secondaryPhones: formData.secondaryPhones || []
         };
 
@@ -1345,6 +1511,35 @@ const Opportunities: React.FC = () => {
 
     const handleDeleteTask = (taskId: string) => {
         setTasks(tasks.filter(t => t.id !== taskId));
+    };
+
+    const handleToggleTaskCompletion = async (taskId: string) => {
+        let updatedTasks = [] as Task[];
+        setTasks(prevTasks => {
+            updatedTasks = prevTasks.map(t => {
+                if (t.id === taskId) {
+                    const newCompleted = !t.isCompleted;
+                    return {
+                        ...t,
+                        isCompleted: newCompleted,
+                        completedAt: newCompleted ? new Date().toISOString() : undefined,
+                        completedBy: newCompleted ? (currentUser?.name || currentUser?.email || 'Unknown') : undefined
+                    };
+                }
+                return t;
+            });
+            return updatedTasks;
+        });
+
+        if (editingId) {
+            try {
+                // Assuming updateOpportunity merges the tasks array
+                await updateOpportunity(editingId, { tasks: updatedTasks });
+            } catch (error) {
+                console.error("Failed to save task completion:", error);
+                toast.error("Failed to sync task completion");
+            }
+        }
     };
 
     const handleAddNote = () => {
@@ -1589,6 +1784,22 @@ const Opportunities: React.FC = () => {
         document.body.removeChild(link);
     };
 
+    const handleAnalyzePotential = async () => {
+        try {
+            setIsAnalyzingPotential(true);
+            toast.loading('Analyzing potential of open leads...', { id: 'analyzePotential' });
+            const analyzeFunc = httpsCallable(functions, 'analyzeOpenLeadsPotential');
+            const result: any = await analyzeFunc();
+            toast.success(`Analyzed open leads. Updated ${result.data?.updatedCount || 0} leads.`, { id: 'analyzePotential' });
+            fetchOpportunities();
+        } catch (error) {
+            console.error('Error analyzing potential:', error);
+            toast.error('Failed to analyze potential', { id: 'analyzePotential' });
+        } finally {
+            setIsAnalyzingPotential(false);
+        }
+    };
+
     return (
         <div className="p-4 md:p-8 h-full flex flex-col bg-gray-50/50">
             {/* Header */}
@@ -1620,6 +1831,14 @@ const Opportunities: React.FC = () => {
                             className="hidden md:flex px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-bold text-gray-700 hover:bg-gray-50 shadow-sm items-center gap-2"
                         >
                             <Download size={16} /> Export ({visibleOpportunities.length})
+                        </button>
+                        <button
+                            onClick={handleAnalyzePotential}
+                            disabled={isAnalyzingPotential}
+                            className={`hidden md:flex px-4 py-2 ${isAnalyzingPotential ? 'bg-yellow-50 text-yellow-400 cursor-not-allowed' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'} border border-yellow-200 rounded-lg text-sm font-bold shadow-sm items-center gap-2`}
+                        >
+                            <Star size={16} className={isAnalyzingPotential ? 'animate-spin' : ''} />
+                            {isAnalyzingPotential ? 'Analyzing...' : 'Analyze Potential'}
                         </button>
                         <button
                             onClick={handleSalestrailSync}
@@ -1809,9 +2028,9 @@ const Opportunities: React.FC = () => {
                     <div className="relative" ref={filterRef}>
                         <button
                             onClick={() => setIsFilterOpen(!isFilterOpen)}
-                            className={`px-3 py-2 border rounded-lg flex items-center gap-2 text-sm font-medium ${isFilterOpen || filters.stage.length > 0 || filters.status || filters.opportunityType || filters.selectedMonth ? 'bg-blue-50 border-brand-blue text-brand-blue' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
+                            className={`px-3 py-2 border rounded-lg flex items-center gap-2 text-sm font-medium ${isFilterOpen || filters.stage.length > 0 || filters.status || filters.opportunityType || filters.selectedMonth || filters.assignee || filters.source ? 'bg-blue-50 border-brand-blue text-brand-blue' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
                         >
-                            <Filter size={18} /> Filters {(filters.stage.length > 0 || filters.status || filters.opportunityType || filters.selectedMonth) && <span className="w-2 h-2 rounded-full bg-brand-blue mb-2"></span>}
+                            <Filter size={18} /> Filters {(filters.stage.length > 0 || filters.status || filters.opportunityType || filters.selectedMonth || filters.assignee || filters.source) && <span className="w-2 h-2 rounded-full bg-brand-blue mb-2"></span>}
                         </button>
 
                         {/* Filter Dropdown */}
@@ -1886,15 +2105,42 @@ const Opportunities: React.FC = () => {
                                         className="w-full p-2 text-sm border border-gray-300 rounded-lg focus:ring-brand-blue focus:border-brand-blue"
                                     />
                                 </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-gray-500 mb-1">Assignee</label>
+                                    <select
+                                        value={filters.assignee}
+                                        onChange={(e) => setFilters(prev => ({ ...prev, assignee: e.target.value }))}
+                                        className="w-full p-2 text-sm border border-gray-300 rounded-lg focus:ring-brand-blue focus:border-brand-blue"
+                                    >
+                                        <option value="">All Assignees</option>
+                                        <option value="Dhiraj">Dhiraj</option>
+                                        <option value="Srishti">Srishti</option>
+                                        <option value="Rupal">Rupal</option>
+                                        <option value="Veda">Veda</option>
+                                        <option value="Komal">Komal</option>
+                                        <option value="Aditya">Aditya</option>
+                                        <option value="Anshita">Anshita</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-gray-500 mb-1">Source</label>
+                                    <input
+                                        type="text"
+                                        placeholder="e.g. meta, organic..."
+                                        value={filters.source}
+                                        onChange={(e) => setFilters(prev => ({ ...prev, source: e.target.value }))}
+                                        className="w-full p-2 text-sm border border-gray-300 rounded-lg focus:ring-brand-blue focus:border-brand-blue"
+                                    />
+                                </div>
                                 <div className="pt-2 border-t border-gray-100 flex justify-between items-center">
                                     <div className="flex gap-3 items-center">
                                         <button
-                                            onClick={() => setFilters({ stage: [], status: '', opportunityType: '', selectedMonth: '' })}
+                                            onClick={() => setFilters({ stage: [], status: '', opportunityType: '', selectedMonth: '', assignee: '', source: '', meta_campaign: '', meta_adset: '' })}
                                             className="text-xs text-red-600 hover:text-red-700 font-medium"
                                         >
                                             Clear Filters
                                         </button>
-                                        {(filters.stage.length > 0 || filters.status || filters.opportunityType || filters.selectedMonth || searchTerm) && (
+                                        {(filters.stage.length > 0 || filters.status || filters.opportunityType || filters.selectedMonth || filters.assignee || filters.source || searchTerm) && (
                                             <button
                                                 onClick={handleExport}
                                                 className="text-xs text-brand-blue hover:text-brand-blue/80 font-bold flex items-center gap-1"
@@ -1940,6 +2186,8 @@ const Opportunities: React.FC = () => {
                                                 totalCount={isFiltered ? stageOpps.length : (stageCounts[stage.id]?.count || 0)}
                                                 totalValue={isFiltered ? stageOpps.reduce((sum, o) => sum + (Number(o.value) || 0), 0) : (stageCounts[stage.id]?.value || 0)}
                                                 appointments={appointments}
+                                                onScoreSingleLead={handleScoreSingleLead}
+                                                scoringLeads={scoringLeads}
                                             />
                                         </div>
                                     );
@@ -2139,7 +2387,7 @@ const Opportunities: React.FC = () => {
             {
                 isModalOpen && (
                     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-0 md:p-4">
-                        <div className="bg-white w-full h-full md:max-w-6xl md:h-[90vh] md:rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+                        <div className="bg-white w-full h-full md:max-w-7xl md:h-[95vh] md:rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
                             {/* Modal Header */}
                             <div className="flex justify-between items-center px-4 md:px-6 py-4 border-b border-gray-200 bg-white shrink-0">
                                 <h2 className="text-lg md:text-xl font-bold text-gray-900">
@@ -2166,7 +2414,6 @@ const Opportunities: React.FC = () => {
                                         const tabs = [
                                             { label: 'Details', id: 'details' },
                                             { label: 'Booking', id: 'book-update-appointment' },
-                                            { label: 'Tasks', id: 'tasks' },
                                             { label: 'Notes', id: 'notes' },
                                             { label: 'Calls', id: 'calls' },
                                             { label: 'Discovery Form', id: 'discovery' },
@@ -2191,8 +2438,9 @@ const Opportunities: React.FC = () => {
                                 </div>
 
                                 {/* Main Content Area */}
-                                <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-white">
-                                    <div className="max-w-4xl mx-auto space-y-6 md:space-y-8 pb-10">
+                                <div className="flex flex-col lg:flex-row flex-1 overflow-hidden">
+                                    <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-white lg:border-r border-gray-200">
+                                        <div className="max-w-4xl mx-auto space-y-6 md:space-y-8 pb-10">
                                         {/* DETAILS TAB */}
                                         {(activeTab === 'details' || activeTab === 'opportunity-details') && (
                                             <>
@@ -2438,6 +2686,30 @@ const Opportunities: React.FC = () => {
                                                                 placeholder="Client Website"
                                                                 value={formData.your_website}
                                                                 onChange={e => setFormData({ ...formData, your_website: e.target.value })}
+                                                                className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
+                                                            />
+                                                        </div>
+
+                                                        {/* Meta Campaign */}
+                                                        <div>
+                                                            <label className="block mb-1.5 text-sm font-medium text-gray-700">Meta Campaign</label>
+                                                            <input
+                                                                type="text"
+                                                                placeholder="Campaign Name"
+                                                                value={formData.meta_campaign}
+                                                                onChange={e => setFormData({ ...formData, meta_campaign: e.target.value })}
+                                                                className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
+                                                            />
+                                                        </div>
+
+                                                        {/* Meta Adset */}
+                                                        <div>
+                                                            <label className="block mb-1.5 text-sm font-medium text-gray-700">Meta Adset</label>
+                                                            <input
+                                                                type="text"
+                                                                placeholder="Adset Name"
+                                                                value={formData.meta_adset}
+                                                                onChange={e => setFormData({ ...formData, meta_adset: e.target.value })}
                                                                 className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
                                                             />
                                                         </div>
@@ -2913,299 +3185,6 @@ const Opportunities: React.FC = () => {
                                         )}
 
                                         {/* TASKS TAB */}
-                                        {activeTab === 'tasks' && (
-                                            <section className="h-full flex flex-col">
-                                                {!isAddingTask ? (
-                                                    <>
-                                                        <div className="flex justify-between items-center mb-6">
-                                                            <h3 className="text-lg font-bold text-gray-900">Tasks</h3>
-                                                            <div className="flex gap-2">
-                                                                <button className="p-2 text-gray-400 hover:text-gray-600"><Filter size={18} /></button>
-                                                            </div>
-                                                        </div>
-
-                                                        <div className="mb-6">
-                                                            <button
-                                                                onClick={() => {
-                                                                    setNewTaskTitle('');
-                                                                    setIsAddingTask(true);
-                                                                }}
-                                                                className="w-full py-3 border-2 border-dashed border-gray-300 rounded-lg text-brand-blue font-medium hover:bg-blue-50 hover:border-brand-blue transition-colors flex items-center justify-center gap-2"
-                                                            >
-                                                                <Plus size={18} /> Add Task
-                                                            </button>
-                                                        </div>
-
-                                                        <div className="relative mb-6">
-                                                            <Search className="absolute left-3 top-2.5 text-gray-400 h-5 w-5" />
-                                                            <input
-                                                                type="text"
-                                                                placeholder="Search by task title"
-                                                                className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
-                                                            />
-                                                        </div>
-
-                                                        <div className="flex-1 overflow-y-auto">
-                                                            {tasks.length === 0 ? (
-                                                                <div className="flex flex-col items-center justify-center h-64 text-center">
-                                                                    <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mb-4 text-brand-blue">
-                                                                        <CheckSquare size={32} />
-                                                                    </div>
-                                                                    <h4 className="text-gray-900 font-medium mb-1">No tasks found</h4>
-                                                                    <p className="text-gray-500 text-sm mb-4">There are no tasks available</p>
-                                                                    <button onClick={() => setIsAddingTask(true)} className="px-4 py-2 bg-brand-blue text-white rounded-lg text-sm font-medium hover:bg-brand-blue/90">
-                                                                        + Add New Task
-                                                                    </button>
-                                                                </div>
-                                                            ) : (
-                                                                <div className="space-y-3">
-                                                                    {tasks.map(task => {
-                                                                        const canComplete = canToggleTaskCompletion(task, currentUser?.id, currentUser?.email);
-                                                                        const canEdit = canEditTask(task, currentUser?.id, currentUser?.email);
-                                                                        const canDelete = canDeleteTask(task, currentUser?.id, currentUser?.email);
-
-                                                                        return (
-                                                                            <div key={task.id} className="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-lg hover:shadow-sm">
-                                                                                <div className="flex items-center gap-3">
-                                                                                    {canComplete ? (
-                                                                                        <input type="checkbox" checked={task.isCompleted} readOnly className="h-4 w-4 text-brand-blue rounded border-gray-300 focus:ring-brand-blue cursor-pointer" />
-                                                                                    ) : (
-                                                                                        <div className="h-4 w-4 rounded border-2 border-gray-300 bg-gray-50 opacity-50" title="Only assigned user can complete this task"></div>
-                                                                                    )}
-                                                                                    <div className="flex flex-col">
-                                                                                        <span className={`text-sm font-medium ${task.isCompleted ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{task.title}</span>
-                                                                                        {task.description && (
-                                                                                            <span className="text-xs text-gray-500 line-clamp-1 max-w-[200px] mt-0.5">{task.description}</span>
-                                                                                        )}
-                                                                                        <div className="flex gap-2 items-center mt-1">
-                                                                                            {task.dueDate && (
-                                                                                                <span className="text-[10px] text-gray-400">Due: {task.dueDate} {formatTimeToAMPM(task.dueTime || '')}</span>
-                                                                                            )}
-                                                                                            {task.assignee && (
-                                                                                                <span className="text-[10px] text-blue-500 font-medium bg-blue-50 px-1 rounded">
-                                                                                                    {task.assignee === currentUser?.email || task.assignee === currentUser?.id ? (
-                                                                                                        task.assignedBy === currentUser?.email || task.assignedBy === currentUser?.id ? (
-                                                                                                            'Self Assigned'
-                                                                                                        ) : (
-                                                                                                            `Assigned by ${task.assignedBy?.split('@')[0] || 'Unknown'}`
-                                                                                                        )
-                                                                                                    ) : (
-                                                                                                        <>
-                                                                                                            {task.assignedBy && task.assignee === task.assignedBy ? (
-                                                                                                                `Self Assigned by ${task.assignee.includes('@') ? task.assignee.split('@')[0] : task.assignee}`
-                                                                                                            ) : (
-                                                                                                                <>
-                                                                                                                    Assigned to: {task.assignee.includes('@') ? task.assignee.split('@')[0] : task.assignee}
-                                                                                                                    {task.assignedBy && (
-                                                                                                                        <span className="text-[9px] opacity-70"> by {task.assignedBy.includes('@') ? task.assignedBy.split('@')[0] : task.assignedBy}</span>
-                                                                                                                    )}
-                                                                                                                </>
-                                                                                                            )}
-                                                                                                        </>
-                                                                                                    )}
-                                                                                                </span>
-                                                                                            )}
-                                                                                            {formData.contactPhone && (
-                                                                                                <span className="text-[10px] text-green-600 font-medium bg-green-50 px-1 rounded flex items-center gap-0.5">
-                                                                                                    <Phone size={8} /> {formData.contactPhone}
-                                                                                                </span>
-                                                                                            )}
-                                                                                        </div>
-                                                                                    </div>
-                                                                                </div>
-                                                                                <div className="flex items-center gap-2">
-                                                                                    {canEdit ? (
-                                                                                        <button onClick={() => handleStartEditTask(task)} className="text-gray-400 hover:text-brand-blue" title="Edit task">
-                                                                                            <Edit2 size={16} />
-                                                                                        </button>
-                                                                                    ) : (
-                                                                                        <div className="p-1 text-gray-200 cursor-not-allowed" title="Only task creator can edit">
-                                                                                            <Edit2 size={16} />
-                                                                                        </div>
-                                                                                    )}
-                                                                                    {canDelete ? (
-                                                                                        <button onClick={() => handleDeleteTask(task.id)} className="text-gray-400 hover:text-red-600" title="Delete task">
-                                                                                            <Trash2 size={16} />
-                                                                                        </button>
-                                                                                    ) : (
-                                                                                        <div className="p-1 text-gray-200 cursor-not-allowed" title="Only task creator can delete">
-                                                                                            <Trash2 size={16} />
-                                                                                        </div>
-                                                                                    )}
-                                                                                </div>
-                                                                            </div>
-                                                                        );
-                                                                    })}
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </>
-                                                ) : (
-                                                    <div className="animate-in fade-in slide-in-from-right-4 h-full flex flex-col">
-                                                        <div className="flex items-center gap-2 mb-6">
-                                                            <button onClick={() => {
-                                                                setIsAddingTask(false);
-                                                                setEditingTaskId(null);
-                                                                setNewTaskTitle('');
-                                                                setNewTaskDescription('');
-                                                            }} className="text-gray-500 hover:text-gray-700">
-                                                                <ChevronDown className="rotate-90" size={20} />
-                                                            </button>
-                                                            <div className="flex items-center gap-3">
-                                                                <h3 className="text-lg font-bold text-gray-900">{editingTaskId ? 'Edit Task' : 'Add Task'}</h3>
-                                                                {formData.contactPhone && (
-                                                                    <div className="flex items-center gap-1.5 px-2 py-1 bg-green-50 text-green-700 rounded-md text-xs font-semibold">
-                                                                        <Phone size={12} />
-                                                                        {formData.contactPhone}
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                        </div>
-
-                                                        <div className="space-y-6 flex-1 overflow-y-auto pr-2">
-                                                            <div>
-                                                                <label className="block mb-1.5 text-sm font-medium text-gray-700">Title <span className="text-red-500">*</span></label>
-                                                                <input
-                                                                    type="text"
-                                                                    placeholder="Task title"
-                                                                    value={newTaskTitle}
-                                                                    onChange={e => setNewTaskTitle(e.target.value)}
-                                                                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
-                                                                />
-                                                            </div>
-
-                                                            <div>
-                                                                <button
-                                                                    className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-2"
-                                                                    onClick={() => setNewTaskDescription('')}
-                                                                >
-                                                                    <div className="w-4 h-4 rounded-full border border-gray-400 flex items-center justify-center">
-                                                                        <div className="w-2 h-0.5 bg-gray-600"></div>
-                                                                    </div>
-                                                                    Clear description
-                                                                </button>
-                                                                <div className="border border-gray-300 rounded-lg overflow-hidden">
-                                                                    <div className="flex items-center gap-2 p-2 border-b border-gray-300 bg-gray-50 text-gray-600">
-                                                                        <button className="p-1 hover:bg-gray-200 rounded"><b className="font-serif font-bold">B</b></button>
-                                                                        <button className="p-1 hover:bg-gray-200 rounded"><i className="font-serif italic">I</i></button>
-                                                                        <button className="p-1 hover:bg-gray-200 rounded"><u className="font-serif underline">U</u></button>
-                                                                        <div className="w-px h-4 bg-gray-300 mx-1"></div>
-                                                                        <button className="p-1 hover:bg-gray-200 rounded text-xs">Link</button>
-                                                                    </div>
-                                                                    <textarea
-                                                                        placeholder="Enter a description..."
-                                                                        value={newTaskDescription}
-                                                                        onChange={e => setNewTaskDescription(e.target.value)}
-                                                                        className="w-full p-3 text-sm focus:outline-none min-h-[120px] resize-none"
-                                                                        maxLength={2000}
-                                                                    ></textarea>
-                                                                    <div className="p-2 text-right text-xs text-gray-400 border-t border-gray-100">
-                                                                        {newTaskDescription.length} / 2000 Characters
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-
-                                                            <div>
-                                                                <label className="block mb-1.5 text-sm font-medium text-gray-700">Due date and time (IST)</label>
-                                                                <div className="flex gap-4">
-                                                                    <div className="relative flex-1">
-                                                                        <input
-                                                                            type="date"
-                                                                            value={newTaskDueDate}
-                                                                            onChange={e => setNewTaskDueDate(e.target.value)}
-                                                                            onClick={(e) => (e.target as any).showPicker?.()}
-                                                                            className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue cursor-pointer"
-                                                                        />
-                                                                    </div>
-                                                                    <div className="flex gap-2 items-center flex-1">
-                                                                        <div className="flex items-center bg-white border border-gray-300 rounded-lg px-2 py-1 gap-1 flex-1">
-                                                                            <select
-                                                                                value={getTimeParts(newTaskDueTime).hour12}
-                                                                                onChange={e => setNewTaskDueTime(joinTimeParts(parseInt(e.target.value), getTimeParts(newTaskDueTime).minutes, getTimeParts(newTaskDueTime).ampm))}
-                                                                                className="bg-transparent border-none p-1 text-sm focus:ring-0 outline-none w-14"
-                                                                            >
-                                                                                {[...Array(12)].map((_, i) => <option key={i + 1} value={i + 1}>{i + 1}</option>)}
-                                                                            </select>
-                                                                            <span className="text-gray-400">:</span>
-                                                                            <select
-                                                                                value={getTimeParts(newTaskDueTime).minutes}
-                                                                                onChange={e => setNewTaskDueTime(joinTimeParts(getTimeParts(newTaskDueTime).hour12, e.target.value, getTimeParts(newTaskDueTime).ampm))}
-                                                                                className="bg-transparent border-none p-1 text-sm focus:ring-0 outline-none w-14"
-                                                                            >
-                                                                                {['00', '05', '10', '15', '20', '25', '30', '35', '40', '45', '50', '55'].map(m => (
-                                                                                    <option key={m} value={m}>{m}</option>
-                                                                                ))}
-                                                                            </select>
-                                                                            <select
-                                                                                value={getTimeParts(newTaskDueTime).ampm}
-                                                                                onChange={e => setNewTaskDueTime(joinTimeParts(getTimeParts(newTaskDueTime).hour12, getTimeParts(newTaskDueTime).minutes, e.target.value))}
-                                                                                className="bg-transparent border-none p-1 text-sm font-bold text-brand-blue focus:ring-0 outline-none"
-                                                                            >
-                                                                                <option value="AM">AM</option>
-                                                                                <option value="PM">PM</option>
-                                                                            </select>
-                                                                            <Clock size={16} className="text-gray-400 ml-auto" />
-                                                                        </div>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-
-                                                            <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
-                                                                <span className="text-sm font-medium text-gray-900">Recurring tasks</span>
-                                                                <label className="relative inline-flex items-center cursor-pointer">
-                                                                    <input
-                                                                        type="checkbox"
-                                                                        className="sr-only peer"
-                                                                        checked={newTaskIsRecurring}
-                                                                        onChange={e => setNewTaskIsRecurring(e.target.checked)}
-                                                                    />
-                                                                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-brand-blue"></div>
-                                                                </label>
-                                                            </div>
-
-                                                            <div>
-                                                                <label className="block mb-1.5 text-sm font-medium text-gray-700">Assign to</label>
-                                                                <select
-                                                                    value={newTaskAssignee}
-                                                                    onChange={e => setNewTaskAssignee(e.target.value)}
-                                                                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
-                                                                >
-                                                                    <option value="">Select assignee</option>
-                                                                    <option value={currentUser?.email || currentUser?.id || 'me'}>Me ({currentUser?.name || 'CurrentUser'})</option>
-                                                                    {TEAM_MEMBERS.map(member => (
-                                                                        <option key={member.email} value={member.email}>
-                                                                            {member.name}
-                                                                        </option>
-                                                                    ))}
-                                                                </select>
-                                                            </div>
-                                                        </div>
-
-                                                        <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-200">
-                                                            <button
-                                                                onClick={() => {
-                                                                    setIsAddingTask(false);
-                                                                    setEditingTaskId(null);
-                                                                    setNewTaskTitle('');
-                                                                    setNewTaskDescription('');
-                                                                }}
-                                                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-                                                            >
-                                                                Cancel
-                                                            </button>
-                                                            <button
-                                                                onClick={handleAddTask}
-                                                                className="px-4 py-2 text-sm font-medium text-white bg-brand-blue rounded-lg hover:bg-brand-blue/90"
-                                                            >
-                                                                {editingTaskId ? 'Update Task' : 'Save'}
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                )}
-                                            </section>
-                                        )}
-
-                                        {/* NOTES TAB */}
                                         {activeTab === 'notes' && (
                                             <section className="h-full flex flex-col">
                                                 <div className="flex justify-between items-center mb-6">
@@ -3442,6 +3421,333 @@ const Opportunities: React.FC = () => {
                                             </section>
                                         )}
                                     </div>
+                                    </div>
+                                    {/* RIGHT PANEL: TASKS */}
+                                    <div className="w-full lg:w-[450px] bg-gray-50 flex flex-col overflow-y-auto p-6 shrink-0 border-t lg:border-t-0 border-gray-200">
+                                        <section className="h-full flex flex-col">
+
+                                                {!isAddingTask ? (
+                                                    <>
+                                                        <div className="flex justify-between items-center mb-6">
+                                                            <h3 className="text-lg font-bold text-gray-900">Tasks</h3>
+                                                            <div className="flex gap-2">
+                                                                <button className="p-2 text-gray-400 hover:text-gray-600"><Filter size={18} /></button>
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="mb-6">
+                                                            <button
+                                                                onClick={() => {
+                                                                    setNewTaskTitle('');
+                                                                    setIsAddingTask(true);
+                                                                }}
+                                                                className="w-full py-3 border-2 border-dashed border-gray-300 rounded-lg text-brand-blue font-medium hover:bg-blue-50 hover:border-brand-blue transition-colors flex items-center justify-center gap-2"
+                                                            >
+                                                                <Plus size={18} /> Add Task
+                                                            </button>
+                                                        </div>
+
+                                                        <div className="relative mb-6">
+                                                            <Search className="absolute left-3 top-2.5 text-gray-400 h-5 w-5" />
+                                                            <input
+                                                                type="text"
+                                                                placeholder="Search by task title"
+                                                                className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
+                                                            />
+                                                        </div>
+
+                                                        <div className="flex-1 overflow-y-auto">
+                                                            {tasks.length === 0 ? (
+                                                                <div className="flex flex-col items-center justify-center h-64 text-center">
+                                                                    <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mb-4 text-brand-blue">
+                                                                        <CheckSquare size={32} />
+                                                                    </div>
+                                                                    <h4 className="text-gray-900 font-medium mb-1">No tasks found</h4>
+                                                                    <p className="text-gray-500 text-sm mb-4">There are no tasks available</p>
+                                                                    <button onClick={() => setIsAddingTask(true)} className="px-4 py-2 bg-brand-blue text-white rounded-lg text-sm font-medium hover:bg-brand-blue/90">
+                                                                        + Add New Task
+                                                                    </button>
+                                                                </div>
+                                                            ) : (
+                                                                <div className="space-y-6">
+                                                                    {tasks.filter(t => !t.isCompleted).length > 0 && (
+                                                                        <div className="space-y-3">
+                                                                            <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2 border-b pb-2">
+                                                                                <span className="w-2 h-2 rounded-full bg-brand-blue"></span> Active Tasks
+                                                                            </h4>
+                                                                            {tasks.filter(t => !t.isCompleted).map(task => {
+                                                                                const canComplete = canToggleTaskCompletion(task, currentUser?.id, currentUser?.email);
+                                                                                const canEdit = canEditTask(task, currentUser?.id, currentUser?.email);
+                                                                                const canDelete = canDeleteTask(task, currentUser?.id, currentUser?.email);
+
+                                                                                return (
+                                                                                    <div key={task.id} className="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-lg hover:shadow-sm">
+                                                                                        <div className="flex items-center gap-3">
+                                                                                            {canComplete ? (
+                                                                                                <input type="checkbox" checked={task.isCompleted} onChange={() => handleToggleTaskCompletion(task.id)} className="h-4 w-4 text-brand-blue rounded border-gray-300 focus:ring-brand-blue cursor-pointer" />
+                                                                                            ) : (
+                                                                                                <div className="h-4 w-4 rounded border-2 border-gray-300 bg-gray-50 opacity-50" title="Only assigned user can complete this task"></div>
+                                                                                            )}
+                                                                                            <div className="flex flex-col">
+                                                                                                <span className="text-sm font-medium text-gray-900">{task.title}</span>
+                                                                                                {task.description && (
+                                                                                                    <span className="text-xs text-gray-500 line-clamp-1 max-w-[200px] mt-0.5">{task.description}</span>
+                                                                                                )}
+                                                                                                <div className="flex flex-wrap gap-2 items-center mt-1">
+                                                                                                    {task.dueDate && (
+                                                                                                        <span className="text-[10px] text-gray-400">Due: {task.dueDate} {formatTimeToAMPM(task.dueTime || '')}</span>
+                                                                                                    )}
+                                                                                                    {task.assignee && (
+                                                                                                        <span className="text-[10px] text-blue-500 font-medium bg-blue-50 px-1 rounded">
+                                                                                                            {task.assignee === currentUser?.email || task.assignee === currentUser?.id ? (
+                                                                                                                task.assignedBy === currentUser?.email || task.assignedBy === currentUser?.id ? 'Self Assigned' : `Assigned by ${task.assignedBy?.split('@')[0] || 'Unknown'}`
+                                                                                                            ) : (
+                                                                                                                `Assigned to: ${task.assignee.includes('@') ? task.assignee.split('@')[0] : task.assignee}`
+                                                                                                            )}
+                                                                                                        </span>
+                                                                                                    )}
+                                                                                                    {formData.contactPhone && (
+                                                                                                        <span className="text-[10px] text-green-600 font-medium bg-green-50 px-1 rounded flex items-center gap-0.5">
+                                                                                                            <Phone size={8} /> {formData.contactPhone}
+                                                                                                        </span>
+                                                                                                    )}
+                                                                                                </div>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                        <div className="flex items-center gap-2">
+                                                                                            {canEdit && (
+                                                                                                <button onClick={() => handleStartEditTask(task)} className="text-gray-400 hover:text-brand-blue" title="Edit task">
+                                                                                                    <Edit2 size={16} />
+                                                                                                </button>
+                                                                                            )}
+                                                                                            {canDelete && (
+                                                                                                <button onClick={() => handleDeleteTask(task.id)} className="text-gray-400 hover:text-red-600" title="Delete task">
+                                                                                                    <Trash2 size={16} />
+                                                                                                </button>
+                                                                                            )}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    )}
+
+                                                                    {tasks.filter(t => t.isCompleted).length > 0 && (
+                                                                        <div className="space-y-3">
+                                                                            <h4 className="text-sm font-semibold text-gray-500 flex items-center gap-2 border-b pb-2">
+                                                                                <CheckSquare size={14} /> Completed Tasks
+                                                                            </h4>
+                                                                            {tasks.filter(t => t.isCompleted).map(task => {
+                                                                                const canComplete = canToggleTaskCompletion(task, currentUser?.id, currentUser?.email);
+                                                                                const canDelete = canDeleteTask(task, currentUser?.id, currentUser?.email);
+
+                                                                                return (
+                                                                                    <div key={task.id} className="flex items-center justify-between p-3 bg-gray-50 border border-gray-200 rounded-lg hover:shadow-sm opacity-80">
+                                                                                        <div className="flex items-center gap-3">
+                                                                                            {canComplete ? (
+                                                                                                <input type="checkbox" checked={task.isCompleted} onChange={() => handleToggleTaskCompletion(task.id)} className="h-4 w-4 text-brand-blue rounded border-gray-300 focus:ring-brand-blue cursor-pointer" />
+                                                                                            ) : (
+                                                                                                <div className="h-4 w-4 rounded border-2 border-gray-300 bg-gray-100 opacity-50" title="Only assigned user can un-complete this task"></div>
+                                                                                            )}
+                                                                                            <div className="flex flex-col">
+                                                                                                <span className="text-sm font-medium text-gray-400 line-through">{task.title}</span>
+                                                                                                <div className="flex gap-2 items-center mt-1">
+                                                                                                    {task.completedAt ? (
+                                                                                                        <span className="text-[10px] text-green-600 bg-green-50 px-1.5 py-0.5 rounded flex items-center gap-1 font-medium">
+                                                                                                            <CheckSquare size={10} /> 
+                                                                                                            Completed on {format(new Date(task.completedAt), 'MMM d, h:mm a')}
+                                                                                                            {task.completedBy && ` by ${task.completedBy.split('@')[0]}`}
+                                                                                                        </span>
+                                                                                                    ) : (
+                                                                                                        <span className="text-[10px] text-green-600 bg-green-50 px-1.5 py-0.5 rounded flex items-center gap-1 font-medium">
+                                                                                                            <CheckSquare size={10} /> Completed
+                                                                                                        </span>
+                                                                                                    )}
+                                                                                                </div>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                        <div className="flex items-center gap-2">
+                                                                                            {canDelete && (
+                                                                                                <button onClick={() => handleDeleteTask(task.id)} className="text-gray-400 hover:text-red-600" title="Delete task">
+                                                                                                    <Trash2 size={16} />
+                                                                                                </button>
+                                                                                            )}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </>
+                                                ) : (
+                                                    <div className="animate-in fade-in slide-in-from-right-4 h-full flex flex-col">
+                                                        <div className="flex items-center gap-2 mb-6">
+                                                            <button onClick={() => {
+                                                                setIsAddingTask(false);
+                                                                setEditingTaskId(null);
+                                                                setNewTaskTitle('');
+                                                                setNewTaskDescription('');
+                                                            }} className="text-gray-500 hover:text-gray-700">
+                                                                <ChevronDown className="rotate-90" size={20} />
+                                                            </button>
+                                                            <div className="flex items-center gap-3">
+                                                                <h3 className="text-lg font-bold text-gray-900">{editingTaskId ? 'Edit Task' : 'Add Task'}</h3>
+                                                                {formData.contactPhone && (
+                                                                    <div className="flex items-center gap-1.5 px-2 py-1 bg-green-50 text-green-700 rounded-md text-xs font-semibold">
+                                                                        <Phone size={12} />
+                                                                        {formData.contactPhone}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="space-y-6 flex-1 overflow-y-auto pr-2">
+                                                            <div>
+                                                                <label className="block mb-1.5 text-sm font-medium text-gray-700">Title <span className="text-red-500">*</span></label>
+                                                                <input
+                                                                    type="text"
+                                                                    placeholder="Task title"
+                                                                    value={newTaskTitle}
+                                                                    onChange={e => setNewTaskTitle(e.target.value)}
+                                                                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
+                                                                />
+                                                            </div>
+
+                                                            <div>
+                                                                <button
+                                                                    className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-2"
+                                                                    onClick={() => setNewTaskDescription('')}
+                                                                >
+                                                                    <div className="w-4 h-4 rounded-full border border-gray-400 flex items-center justify-center">
+                                                                        <div className="w-2 h-0.5 bg-gray-600"></div>
+                                                                    </div>
+                                                                    Clear description
+                                                                </button>
+                                                                <div className="border border-gray-300 rounded-lg overflow-hidden">
+                                                                    <div className="flex items-center gap-2 p-2 border-b border-gray-300 bg-gray-50 text-gray-600">
+                                                                        <button className="p-1 hover:bg-gray-200 rounded"><b className="font-serif font-bold">B</b></button>
+                                                                        <button className="p-1 hover:bg-gray-200 rounded"><i className="font-serif italic">I</i></button>
+                                                                        <button className="p-1 hover:bg-gray-200 rounded"><u className="font-serif underline">U</u></button>
+                                                                        <div className="w-px h-4 bg-gray-300 mx-1"></div>
+                                                                        <button className="p-1 hover:bg-gray-200 rounded text-xs">Link</button>
+                                                                    </div>
+                                                                    <textarea
+                                                                        placeholder="Enter a description..."
+                                                                        value={newTaskDescription}
+                                                                        onChange={e => setNewTaskDescription(e.target.value)}
+                                                                        className="w-full p-3 text-sm focus:outline-none min-h-[120px] resize-none"
+                                                                        maxLength={2000}
+                                                                    ></textarea>
+                                                                    <div className="p-2 text-right text-xs text-gray-400 border-t border-gray-100">
+                                                                        {newTaskDescription.length} / 2000 Characters
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+
+                                                            <div>
+                                                                <label className="block mb-1.5 text-sm font-medium text-gray-700">Due date and time (IST)</label>
+                                                                <div className="flex gap-4">
+                                                                    <div className="relative flex-1">
+                                                                        <input
+                                                                            type="date"
+                                                                            value={newTaskDueDate}
+                                                                            onChange={e => setNewTaskDueDate(e.target.value)}
+                                                                            onClick={(e) => (e.target as any).showPicker?.()}
+                                                                            className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue cursor-pointer"
+                                                                        />
+                                                                    </div>
+                                                                    <div className="flex gap-2 items-center flex-1">
+                                                                        <div className="flex items-center bg-white border border-gray-300 rounded-lg px-2 py-1 gap-1 flex-1">
+                                                                            <select
+                                                                                value={getTimeParts(newTaskDueTime).hour12}
+                                                                                onChange={e => setNewTaskDueTime(joinTimeParts(parseInt(e.target.value), getTimeParts(newTaskDueTime).minutes, getTimeParts(newTaskDueTime).ampm))}
+                                                                                className="bg-transparent border-none p-1 text-sm focus:ring-0 outline-none w-14"
+                                                                            >
+                                                                                {[...Array(12)].map((_, i) => <option key={i + 1} value={i + 1}>{i + 1}</option>)}
+                                                                            </select>
+                                                                            <span className="text-gray-400">:</span>
+                                                                            <select
+                                                                                value={getTimeParts(newTaskDueTime).minutes}
+                                                                                onChange={e => setNewTaskDueTime(joinTimeParts(getTimeParts(newTaskDueTime).hour12, e.target.value, getTimeParts(newTaskDueTime).ampm))}
+                                                                                className="bg-transparent border-none p-1 text-sm focus:ring-0 outline-none w-14"
+                                                                            >
+                                                                                {['00', '05', '10', '15', '20', '25', '30', '35', '40', '45', '50', '55'].map(m => (
+                                                                                    <option key={m} value={m}>{m}</option>
+                                                                                ))}
+                                                                            </select>
+                                                                            <select
+                                                                                value={getTimeParts(newTaskDueTime).ampm}
+                                                                                onChange={e => setNewTaskDueTime(joinTimeParts(getTimeParts(newTaskDueTime).hour12, getTimeParts(newTaskDueTime).minutes, e.target.value))}
+                                                                                className="bg-transparent border-none p-1 text-sm font-bold text-brand-blue focus:ring-0 outline-none"
+                                                                            >
+                                                                                <option value="AM">AM</option>
+                                                                                <option value="PM">PM</option>
+                                                                            </select>
+                                                                            <Clock size={16} className="text-gray-400 ml-auto" />
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+
+                                                            <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
+                                                                <span className="text-sm font-medium text-gray-900">Recurring tasks</span>
+                                                                <label className="relative inline-flex items-center cursor-pointer">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        className="sr-only peer"
+                                                                        checked={newTaskIsRecurring}
+                                                                        onChange={e => setNewTaskIsRecurring(e.target.checked)}
+                                                                    />
+                                                                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-brand-blue"></div>
+                                                                </label>
+                                                            </div>
+
+                                                            <div>
+                                                                <label className="block mb-1.5 text-sm font-medium text-gray-700">Assign to</label>
+                                                                <select
+                                                                    value={newTaskAssignee}
+                                                                    onChange={e => setNewTaskAssignee(e.target.value)}
+                                                                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
+                                                                >
+                                                                    <option value="">Select assignee</option>
+                                                                    <option value={currentUser?.email || currentUser?.id || 'me'}>Me ({currentUser?.name || 'CurrentUser'})</option>
+                                                                    {TEAM_MEMBERS.map(member => (
+                                                                        <option key={member.email} value={member.email}>
+                                                                            {member.name}
+                                                                        </option>
+                                                                    ))}
+                                                                </select>
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-200">
+                                                            <button
+                                                                onClick={() => {
+                                                                    setIsAddingTask(false);
+                                                                    setEditingTaskId(null);
+                                                                    setNewTaskTitle('');
+                                                                    setNewTaskDescription('');
+                                                                }}
+                                                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                                                            >
+                                                                Cancel
+                                                            </button>
+                                                            <button
+                                                                onClick={handleAddTask}
+                                                                className="px-4 py-2 text-sm font-medium text-white bg-brand-blue rounded-lg hover:bg-brand-blue/90"
+                                                            >
+                                                                {editingTaskId ? 'Update Task' : 'Save'}
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            
+                                        </section>
+                                    </div>
+
                                 </div>
                             </div>
 

@@ -17,14 +17,35 @@ import { TrendingUp, Target, CheckCircle, Loader2, Users, ArrowUpRight, ArrowDow
 import * as LucideIcons from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { isUserAdmin, ADMIN_CONFIG } from '../lib/admin';
-import { httpsCallable } from 'firebase/functions';
-import { functions } from '../lib/firebase';
+import { collection, getDocs } from 'firebase/firestore';
+import { functions, db } from '../lib/firebase';
 import toast from 'react-hot-toast';
 
 const Dashboard: React.FC = () => {
   const { dashboardStats, fetchDashboardStats, stages, currentUser } = useStore();
   const [timeRange, setTimeRange] = React.useState('30'); // '30', '7', '1'
   const [isSendingReport, setIsSendingReport] = React.useState(false);
+  const [employeeMetrics, setEmployeeMetrics] = React.useState<Record<string, number>>({});
+
+  // Fetch employee metrics (escalations)
+  useEffect(() => {
+    const fetchMetrics = async () => {
+      try {
+        const snapshot = await getDocs(collection(db, 'employee_metrics'));
+        const metricsData: Record<string, number> = {};
+        snapshot.forEach(doc => {
+          metricsData[doc.id] = doc.data().escalationCount || 0;
+        });
+        setEmployeeMetrics(metricsData);
+      } catch (err) {
+        console.error('Error fetching employee metrics:', err);
+      }
+    };
+    
+    if (isUserAdmin(currentUser?.email)) {
+      fetchMetrics();
+    }
+  }, [currentUser]);
 
   // Fetch dashboard stats when time range changes
   useEffect(() => {
@@ -89,7 +110,7 @@ const Dashboard: React.FC = () => {
 
   // Individual Performance Stats and Call Aggregates
   const { teamMemberStats, globalCallStats } = React.useMemo(() => {
-    if (!dashboardStats?.allOpportunities) return { teamMemberStats: [], globalCallStats: { totalDuration: 0, totalCount: 0 } };
+    if (!dashboardStats?.recentOpportunities) return { teamMemberStats: [], globalCallStats: { totalDuration: 0, totalCount: 0 } };
 
     const TEAM_MEMBERS = ADMIN_CONFIG.USERS;
     const stagesList = stages || [];
@@ -114,11 +135,11 @@ const Dashboard: React.FC = () => {
       stats[m.email] = { name: m.name, total: 0, won: 0, lost: 0, open: 0, value: 0, totalCallDuration: 0, totalCalls: 0, stageCounts: {} };
     });
 
-    (dashboardStats.allOpportunities || []).forEach(opp => {
+    // 1. Calculate Opportunity generation metrics using recentOpportunities
+    (dashboardStats.recentOpportunities || []).forEach(opp => {
       if (!opp) return; 
       const assigneeRaw = opp.followUpAssignee || opp.owner || 'Unassigned';
       
-      // Robust lookup to consolidate multiple identifiers (UIDs, Emails, Names)
       const member = TEAM_MEMBERS.find(m => 
         m.id === assigneeRaw || 
         m.email === assigneeRaw || 
@@ -134,13 +155,12 @@ const Dashboard: React.FC = () => {
       
       stats[key].total++;
       
-      // Stage matching
       const stageId = opp.stage || 'unknown';
       stats[key].stageCounts[stageId] = (stats[key].stageCounts[stageId] || 0) + 1;
 
       if (opp.status === 'Won' || opp.stage === '10') {
         stats[key].won++;
-      } else if (opp.status === 'Lost') {
+      } else if (opp.status === 'Lost' || opp.status === 'Abandoned') {
         stats[key].lost++;
       } else {
         stats[key].open++;
@@ -148,17 +168,59 @@ const Dashboard: React.FC = () => {
       
       const val = Number(opp.value);
       stats[key].value += isNaN(val) ? 0 : val;
+    });
 
-      // Add call stats
-      if (Array.isArray(opp.calls)) {
-        opp.calls.forEach(call => {
-          const dur = (call.duration || 0);
-          stats[key].totalCallDuration += dur;
-          stats[key].totalCalls++;
-          globalDuration += dur;
-          globalCount++;
-        });
+    // 2. Calculate Call metrics using allOpportunities to ensure calls on older leads are counted
+    let pastDateStr: string | null = null;
+    if (timeRange !== 'all') {
+      const daysBack = parseInt(timeRange);
+      if (daysBack > 0) {
+        const pastDate = new Date();
+        pastDate.setDate(new Date().getDate() - (daysBack - 1));
+        pastDate.setHours(0, 0, 0, 0);
+        pastDateStr = pastDate.toISOString();
       }
+    }
+
+    (dashboardStats.allOpportunities || []).forEach(opp => {
+      if (!opp || !Array.isArray(opp.calls)) return;
+      
+      const assigneeRaw = opp.followUpAssignee || opp.owner || 'Unassigned';
+      const defaultMember = TEAM_MEMBERS.find(m => 
+        m.id === assigneeRaw || m.email === assigneeRaw || m.email.toLowerCase() === assigneeRaw.toLowerCase() || m.name.toLowerCase() === assigneeRaw.toLowerCase()
+      );
+      const defaultKey = defaultMember ? defaultMember.email : (assigneeRaw === 'Unassigned' ? 'Unassigned' : assigneeRaw);
+
+      opp.calls.forEach(call => {
+        // Filter out calls that are older than the selected time range
+        if (pastDateStr && call.startTime && call.startTime < pastDateStr) return;
+
+        const dur = (call.duration || 0);
+        const callerName = (call.userName || '').toLowerCase();
+        
+        // Find the team member who made the call
+        const callerMember = TEAM_MEMBERS.find(m => 
+          m.name.toLowerCase() === callerName ||
+          m.email.toLowerCase() === callerName ||
+          (callerName && m.name.toLowerCase().includes(callerName)) ||
+          (callerName && callerName.includes(m.name.toLowerCase()))
+        );
+        
+        const callKey = callerMember ? callerMember.email : defaultKey;
+        
+        if (!stats[callKey]) {
+          stats[callKey] = { 
+            name: callerMember?.name || call.userName || callKey, 
+            total: 0, won: 0, lost: 0, open: 0, value: 0, 
+            totalCallDuration: 0, totalCalls: 0, stageCounts: {} 
+          };
+        }
+        
+        stats[callKey].totalCallDuration += dur;
+        stats[callKey].totalCalls++;
+        globalDuration += dur;
+        globalCount++;
+      });
     });
 
     const memberStats = Object.values(stats).map(entry => {
@@ -175,7 +237,7 @@ const Dashboard: React.FC = () => {
     }).sort((a, b) => b.total - a.total);
 
     return { teamMemberStats: memberStats, globalCallStats: { totalDuration: globalDuration, totalCount: globalCount } };
-  }, [dashboardStats, stages]);
+  }, [dashboardStats, stages, timeRange]);
 
   // Safe Icon Picker
   const IndianRupeeIcon = (LucideIcons as any).IndianRupee || CircleDollarSign;
@@ -562,6 +624,7 @@ const Dashboard: React.FC = () => {
                       <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center text-red-500">Lost</th>
                       <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center text-brand-blue">Conversion</th>
                       <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center text-orange-600">Call Time</th>
+                      <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center text-red-600">Escalations</th>
                       <th className="py-3 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-right">Value</th>
                     </tr>
                   </thead>
@@ -612,6 +675,15 @@ const Dashboard: React.FC = () => {
                               {Math.floor(user.totalCallDuration / 3600)}h {Math.floor((user.totalCallDuration % 3600) / 60)}m
                             </div>
                             <div className="text-[10px] text-gray-400 font-medium">{user.totalCalls} Calls</div>
+                          </td>
+                          <td className="py-4 px-4 text-center">
+                            {employeeMetrics[user.name] || employeeMetrics[ADMIN_CONFIG.USERS.find(u => u.name === user.name)?.email || ''] ? (
+                              <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-100 text-red-600 font-bold text-xs">
+                                {employeeMetrics[user.name] || employeeMetrics[ADMIN_CONFIG.USERS.find(u => u.name === user.name)?.email || '']}
+                              </span>
+                            ) : (
+                              <span className="text-gray-300">-</span>
+                            )}
                           </td>
                           <td className="py-4 px-4 text-right text-sm font-bold text-gray-900">
                             ₹{user.value.toLocaleString()}

@@ -75,6 +75,7 @@ interface AppState {
         stageBreakdown: Record<string, { count: number; value: number }>;
         pipelineTrend: { name: string; value: number }[];
         taskStats: { completed: number; pending: number; total: number };
+        recentOpportunities: Opportunity[];
         allOpportunities: Opportunity[];
     } | null;
     fetchDashboardStats: (daysBack: number) => Promise<void>;
@@ -289,6 +290,7 @@ export const useStore = create<AppState>((set, get) => ({
                     stageBreakdown: stats.stageBreakdown,
                     pipelineTrend: stats.pipelineTrend,
                     taskStats: stats.taskStats,
+                    recentOpportunities: stats.recentOpportunities || [],
                     allOpportunities: stats.allOpportunities || []
                 }
             });

@@ -90,6 +90,49 @@ export const isUserPhoneAuthorized = (phone: string): boolean => {
     return AUTHORIZED_PHONES.includes(cleanPhone);
 };
 
+/**
+ * Gets the employee name for a given ID or Name
+ */
+export const getEmployeeName = (idOrName: string | null | undefined): string => {
+    if (!idOrName) return 'Unknown';
+    const cleanId = idOrName.trim();
+    const lower = cleanId.toLowerCase();
+    
+    const user = ADMIN_CONFIG.USERS.find(u => 
+        u.id === cleanId || 
+        u.name.toLowerCase() === lower ||
+        lower.includes(u.name.toLowerCase()) ||
+        u.name.toLowerCase().includes(lower)
+    );
+    
+    return user ? user.name : idOrName;
+};
+
+/**
+ * Normalizes an employee owner string to a valid user ID if possible
+ */
+export const normalizeOwner = (owner: string | undefined | null) => {
+    if (!owner || owner.toLowerCase() === 'unassigned') return null;
+    const lowerOwner = owner.toLowerCase().trim();
+    
+    // Known IDs mapping
+    if (lowerOwner.includes('rupal') || owner === 'UNUwIgtVDUc6c9uQVMvBiYjmBYB2' || owner === 'UNUwlgtVDUc6c9uQVMvBiYjmBYB2') return 'UNUwlgtVDUc6c9uQVMvBiYjmBYB2';
+    if (lowerOwner.includes('veda')) return '6l7loPF90teRjJxy61ABWH5GUvX2';
+    if (lowerOwner.includes('komal')) return 'OwGcGoDXKdPVAMBNTyrY8nDqpmm2';
+    if (lowerOwner.includes('dhiraj')) return '58Ba96qczERiK7DzBbMkpoko7Vx1';
+    if (lowerOwner.includes('srishti')) return 'srishti-mojo-id';
+    if (lowerOwner.includes('aditya')) return 'aditya-mojo-id';
+    if (lowerOwner.includes('anshita')) return 'anshita-mojo-id';
+
+    const matchedUser = ADMIN_CONFIG.USERS.find(u => 
+      u.id === owner || 
+      lowerOwner.includes(u.name.toLowerCase()) ||
+      u.name.toLowerCase().includes(lowerOwner)
+    );
+    
+    if (matchedUser) return matchedUser.id;
+    return owner.trim();
+};
+
 // Export the reset tasks utility
 export { resetAllTasks };
-

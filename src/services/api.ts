@@ -297,25 +297,27 @@ const firebaseApi = {
         },
         getDashboardStats: async (daysBack: number = 30) => {
             try {
-                let q = query(collection(db, 'opportunities'));
-            
+                const q = query(collection(db, 'opportunities'));
+            const querySnapshot = await getDocs(q);
+            const allOpportunities = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Opportunity));
+
+            let filteredOpportunities = allOpportunities;
+
             if (daysBack > 0) {
                 const now = new Date();
                 const pastDate = new Date();
                 pastDate.setDate(now.getDate() - (daysBack - 1));
                 pastDate.setHours(0, 0, 0, 0);
+                const pastDateStr = pastDate.toISOString();
                 
-                // Handle both ISO strings and Timestamp-based legacy data in queries is tricky.
-                // We'll filter client-side for absolute accuracy if we catch a mix, 
-                // but the ISO comparison works for strings. 
-                q = query(
-                    collection(db, 'opportunities'),
-                    where('createdAt', '>=', pastDate.toISOString())
-                );
+                filteredOpportunities = allOpportunities.filter(opp => {
+                    if (!opp.createdAt) return false;
+                    const oppDateStr = typeof opp.createdAt === 'string' 
+                        ? opp.createdAt 
+                        : new Date((opp.createdAt as any).seconds * 1000).toISOString();
+                    return oppDateStr >= pastDateStr;
+                });
             }
-
-            const querySnapshot = await getDocs(q);
-            const filteredOpportunities = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Opportunity));
 
             const now = new Date();
             now.setHours(23, 59, 59, 999);
@@ -325,7 +327,7 @@ const firebaseApi = {
             const totalOpportunities = filteredOpportunities.length;
             const totalPipelineValue = filteredOpportunities.reduce((sum, opp) => sum + Number(opp.value || 0), 0);
             const wonOpportunities = filteredOpportunities.filter(opp => opp.status === 'Won' || opp.stage === '10').length;
-            const lostOpportunities = filteredOpportunities.filter(opp => opp.status === 'Lost').length;
+            const lostOpportunities = filteredOpportunities.filter(opp => opp.status === 'Lost' || opp.status === 'Abandoned').length;
             const openOpportunities = filteredOpportunities.filter(opp => opp.status === 'Open' || opp.status === 'Not Answered').length;
             const conversionRate = totalOpportunities > 0 ? ((wonOpportunities / totalOpportunities) * 100) : 0;
 
@@ -377,7 +379,8 @@ const firebaseApi = {
                     pending: pendingTasks || 0,
                     total: allTasks.length || 0
                 },
-                allOpportunities: filteredOpportunities || []
+                recentOpportunities: filteredOpportunities || [],
+                allOpportunities: allOpportunities || []
             };
         } catch (error) {
             console.error('Error fetching dashboard stats:', error);

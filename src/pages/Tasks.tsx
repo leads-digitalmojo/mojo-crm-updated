@@ -180,9 +180,18 @@ const Tasks: React.FC = () => {
         const opp = opportunities.find(o => o.id === task.opportunityId);
         if (!opp || !opp.tasks) return;
 
-        const updatedTasks = opp.tasks.map(t =>
-            t.id === task.id ? { ...t, isCompleted: !t.isCompleted } : t
-        );
+        const updatedTasks = opp.tasks.map(t => {
+            if (t.id === task.id) {
+                const newCompleted = !t.isCompleted;
+                return { 
+                    ...t, 
+                    isCompleted: newCompleted,
+                    completedAt: newCompleted ? new Date().toISOString() : undefined,
+                    completedBy: newCompleted ? (currentUser?.name || currentUser?.email || 'Unknown') : undefined
+                };
+            }
+            return t;
+        });
 
         updateOpportunity(task.opportunityId, { tasks: updatedTasks });
     };
@@ -300,12 +309,17 @@ const Tasks: React.FC = () => {
                     <div className="grid gap-4 max-w-5xl mx-auto">
                         {filteredTasks.map(task => {
                             const canComplete = canToggleTaskCompletion(task, currentUser?.id, currentUser?.email);
+                            const isTaskOverdue = !task.isCompleted && task.dueDate && isPast(parseISO(task.dueDate)) && !isToday(parseISO(task.dueDate));
+                            const containerClass = task.isCompleted
+                                ? 'opacity-75 bg-gray-50 border-gray-200 shadow-sm'
+                                : isTaskOverdue
+                                    ? 'bg-red-50 border-red-500 shadow-sm shadow-red-100'
+                                    : 'bg-white border-gray-200 shadow-sm hover:shadow-md';
 
                             return (
                                 <div
                                     key={task.id}
-                                    className={`group bg-white p-4 rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-all flex items-center gap-4 cursor-pointer ${task.isCompleted ? 'opacity-75 bg-gray-50' : ''
-                                        }`}
+                                    className={`group p-4 rounded-xl border transition-all flex items-center gap-4 cursor-pointer ${containerClass}`}
                                     onClick={() => setSelectedTask(task)}
                                 >
                                     {canComplete ? (

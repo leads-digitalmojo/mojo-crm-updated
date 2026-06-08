@@ -301,6 +301,19 @@ const Contacts: React.FC = () => {
         }
     };
 
+    const getInIST = (date: Date = new Date()) => {
+    return new Date(date.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+};
+
+const formatDisplayPhone = (phone: string | undefined | null) => {
+    if (!phone) return '';
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length > 10 && !phone.startsWith('+')) {
+        return `+${digits.substring(0, digits.length - 10)} ${digits.substring(digits.length - 10)}`;
+    }
+    return phone;
+};
+
     const handleSelectOne = (id: string) => {
         const newSelected = new Set(selectedIds);
         if (newSelected.has(id)) {
@@ -622,7 +635,7 @@ const Contacts: React.FC = () => {
                                                 )}
                                             </td>
 
-                                            <td className="p-4 text-sm text-gray-600">{contact.phone}</td>
+                                            <td className="p-4 text-sm text-gray-600">{formatDisplayPhone(contact.phone)}</td>
                                             <td className="p-4 text-sm text-gray-600">{contact.companyName || '-'}</td>
                                             <td className="p-4">
                                                 <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${contact.type === 'Performance' ? 'bg-green-50 text-green-700 border-green-100' :

@@ -24,6 +24,8 @@ import Settings from './pages/Settings';
 import Profile from './pages/Profile';
 import Logs from './pages/Logs';
 import RedFlags from './pages/RedFlags';
+import CommandCentre from './pages/CommandCentre';
+import Webhooks from './pages/Webhooks';
 
 const PrivateRoute = () => {
   const { currentUser, isLoadingAuth } = useStore();
@@ -137,6 +139,14 @@ const App: React.FC = () => {
             } />
             <Route path="/red-flags" element={
               isUserAdmin(currentUser?.email) ? <RedFlags /> : <Navigate to="/dashboard" replace />
+            } />
+            <Route path="/command-centre" element={
+              <ErrorBoundary fallbackName="Command Centre">
+                <CommandCentre />
+              </ErrorBoundary>
+            } />
+            <Route path="/webhooks" element={
+              isUserAdmin(currentUser?.email) ? <Webhooks /> : <Navigate to="/dashboard" replace />
             } />
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
           </Route>

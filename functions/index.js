@@ -25,6 +25,12 @@ const getMetaToken = () => process.env.META_ACCESS_TOKEN;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const SALESTRAIL_AUTH = process.env.SALESTRAIL_AUTH;
 const SALESTRAIL_BASE_URL = process.env.SALESTRAIL_BASE_URL;
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+let resend;
+if (RESEND_API_KEY) {
+    const { Resend } = require('resend');
+    resend = new Resend(RESEND_API_KEY);
+}
 
 // Synchronized User List (from src/lib/admin.ts)
 const USERS = [
@@ -68,7 +74,9 @@ async function notifyDhirajAboutCallAnalysis(leadName, analysis, callUserName) {
         leadName: leadName,
         callUser: callUserName,
         rating: analysis.rating || 0,
-        summary: analysis.summary || 'No summary provided.'
+        summary: analysis.summary || 'No summary provided.',
+        goodFeatures: analysis.goodFeatures || [],
+        improvements: analysis.improvements || []
     });
 }
 
@@ -200,7 +208,20 @@ async function sendLeadWelcomeSequence(phone, leadName, assignedName, opportunit
 function normalizePhone(phone) {
     if (!phone) return '';
     const cleaned = String(phone).replace(/\D/g, '');
-    return cleaned.length >= 10 ? cleaned.slice(-10) : cleaned;
+    return cleaned;
+}
+
+/**
+ * Generates an array of phone variants (full and 10-digit legacy) 
+ * for robust database querying and deduplication.
+ */
+function getPhoneVariants(phone) {
+    if (!phone) return [''];
+    const cleaned = String(phone).replace(/\D/g, '');
+    if (cleaned.length >= 10) {
+        return Array.from(new Set([cleaned, cleaned.slice(-10)]));
+    }
+    return [cleaned];
 }
 
 /**
@@ -255,6 +276,42 @@ function getISTDateString() {
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+}
+
+/**
+ * Calculates effective time in milliseconds elapsed between startMs and endMs,
+ * skipping any time that falls on a Sunday in IST.
+ */
+function getEffectiveTimeMs(startMs, endMs) {
+    if (startMs >= endMs) return 0;
+    
+    let totalMs = endMs - startMs;
+    let sundayMs = 0;
+    
+    // Offset for IST is +5h 30m
+    const IST_OFFSET = 5.5 * 60 * 60 * 1000;
+    const startIST = startMs + IST_OFFSET;
+    const endIST = endMs + IST_OFFSET;
+    
+    let currentDayIST = new Date(startIST);
+    currentDayIST.setUTCHours(0, 0, 0, 0); // Start of the IST day
+    
+    while (currentDayIST.getTime() <= endIST) {
+        if (currentDayIST.getUTCDay() === 0) { // Sunday
+            const sundayStart = currentDayIST.getTime();
+            const sundayEnd = sundayStart + 24 * 60 * 60 * 1000;
+            
+            const overlapStart = Math.max(startIST, sundayStart);
+            const overlapEnd = Math.min(endIST, sundayEnd);
+            
+            if (overlapStart < overlapEnd) {
+                sundayMs += (overlapEnd - overlapStart);
+            }
+        }
+        currentDayIST.setUTCDate(currentDayIST.getUTCDate() + 1);
+    }
+    
+    return totalMs - sundayMs;
 }
 
 /**
@@ -491,11 +548,21 @@ async function notifyTeamMember(email, messageData) {
                 messageData.summary || 'No summary'
             ];
 
+            let text = `📊 *AI Call Analysis*\n\nLead: ${displayLeadName}\nUser: ${messageData.callUser}\nRating: ${messageData.rating}/10\n\nReview: ${messageData.summary}`;
+            
+            if (messageData.goodFeatures && messageData.goodFeatures.length > 0) {
+                text += `\n\n✅ *Key Strengths:*\n- ${messageData.goodFeatures.join('\n- ')}`;
+            }
+            if (messageData.improvements && messageData.improvements.length > 0) {
+                text += `\n\n📈 *Areas for Improvement:*\n- ${messageData.improvements.join('\n- ')}`;
+            }
+
             try {
                 await sendWatiTemplate(user.phone, templateName, params);
+                // Send detailed analysis as a session message after the brief template
+                await axios.post(`${WATI_ENDPOINT}/api/v1/sendSessionMessage/${user.phone}?messageText=${encodeURIComponent(text)}`, {}, { headers: { Authorization: WATI_TOKEN } }).catch(() => {});
             } catch (e) {
                 console.log(`[Notifications] Analysis template failed for ${user.name}, falling back to session message.`);
-                const text = `📊 *AI Call Analysis*\n\nLead: ${displayLeadName}\nUser: ${messageData.callUser}\nRating: ${messageData.rating}/10\n\nReview: ${messageData.summary}`;
                 await axios.post(`${WATI_ENDPOINT}/api/v1/sendSessionMessage/${user.phone}?messageText=${encodeURIComponent(text)}`, {}, { headers: { Authorization: WATI_TOKEN } });
             }
         } else if (type === 'assignment') {
@@ -515,6 +582,73 @@ async function notifyTeamMember(email, messageData) {
         console.error(`[Notifications] Failed to notify ${user.name}:`, err.message);
         return false;
     }
+}
+
+/**
+ * Send email using Resend API.
+ * Rules: Automatically include Srishti if sending to Dhiraj, and CC the assignee.
+ */
+async function sendEmailWithCC(toEmail, subject, htmlContent, assigneeEmail) {
+    if (!resend) {
+        console.warn(`[Emails] Resend not configured. Would have sent: ${subject}`);
+        return;
+    }
+    
+    let toAddresses = [toEmail];
+    let ccAddresses = [];
+    
+    if (toEmail === 'dhiraj@digitalmojo.in') {
+        toAddresses.push('srishti@digitalmojo.in');
+    }
+    
+    if (assigneeEmail && !toAddresses.includes(assigneeEmail)) {
+        ccAddresses.push(assigneeEmail);
+    }
+    
+    try {
+        const result = await resend.emails.send({
+            from: 'Mojo CRM <info@digitalmojo.in>',
+            to: toAddresses,
+            cc: ccAddresses.length > 0 ? ccAddresses : undefined,
+            subject: subject,
+            html: htmlContent
+        });
+        console.log(`[Emails] Sent email via Resend: ${result?.id || 'Unknown ID'}`);
+        return result;
+    } catch (e) {
+        console.error(`[Emails] Resend error:`, e.message);
+    }
+}
+
+/**
+ * Helper to generate eye-catching HTML for escalation emails.
+ */
+function getEscalationEmailHtml(title, leadName, details) {
+    return `
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; border: 2px solid #b71c1c; border-radius: 8px; overflow: hidden; box-shadow: 0 8px 16px rgba(183,28,28,0.2);">
+        <div style="background-color: #b71c1c; color: white; padding: 25px; text-align: center; border-bottom: 4px solid #f44336;">
+            <h2 style="margin: 0; font-size: 28px; letter-spacing: 2px; text-transform: uppercase; text-shadow: 1px 1px 2px rgba(0,0,0,0.3);">🚨 URGENT ESCALATION 🚨</h2>
+            <p style="margin: 10px 0 0 0; font-size: 16px; font-weight: bold; background-color: rgba(255,255,255,0.2); display: inline-block; padding: 5px 15px; border-radius: 20px;">IMMEDIATE ACTION REQUIRED</p>
+        </div>
+        <div style="padding: 30px; background-color: #ffffff;">
+            <h3 style="margin-top: 0; color: #b71c1c; font-size: 22px; border-bottom: 2px solid #ffebee; padding-bottom: 10px;">🛑 ${title}</h3>
+            <p style="font-size: 16px; line-height: 1.6; color: #333; font-weight: 500;">
+                This is a high-priority automated escalation regarding the lead <strong>${leadName}</strong>. 
+                Service level agreements (SLA) have been breached and immediate intervention is necessary.
+            </p>
+            <div style="background-color: #fff8f8; border: 1px solid #ffcdd2; border-left: 5px solid #b71c1c; padding: 18px; margin: 25px 0; border-radius: 4px;">
+                ${details.map(d => `<p style="margin: 8px 0; font-size: 15px; color: #444;"><strong style="color: #000; min-width: 130px; display: inline-block;">${d.label}:</strong> <span style="background-color: #ffebee; padding: 2px 6px; border-radius: 4px; color: #c62828; font-weight: 600;">${d.value}</span></p>`).join('')}
+            </div>
+            <div style="text-align: center; margin-top: 30px;">
+                <a href="https://crm.digitalmojo.in" style="background-color: #d32f2f; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 16px; display: inline-block; box-shadow: 0 4px 6px rgba(211,47,47,0.3);">Open Mojo CRM Now</a>
+            </div>
+            <p style="font-size: 13px; color: #888; margin-top: 30px; text-align: center; border-top: 1px solid #eeeeee; padding-top: 20px;">
+                This is an automated system notification from Mojo CRM.<br>
+                <em>Please do not reply to this email.</em>
+            </p>
+        </div>
+    </div>
+    `;
 }
 
 /**
@@ -642,9 +776,14 @@ exports.whatsappWebhook = functions.runWith({ timeoutSeconds: 60, memory: '512MB
 
         // 3. Authorization Check
         const senderNumber = normalizePhone(payload.waId || payload.whatsappNumber || payload.from || '');
-        const authorizedPhones = USERS.map(u => normalizePhone(u.phone));
+        const senderVariants = getPhoneVariants(senderNumber);
 
-        if (!authorizedPhones.includes(senderNumber)) {
+        const isAuthorized = USERS.some(u => {
+            const userVariants = getPhoneVariants(u.phone);
+            return senderVariants.some(v => userVariants.includes(v));
+        });
+
+        if (!isAuthorized) {
             console.log(`[WhatsApp Webhook] 🛑 Unauthorized attempt from: ${senderNumber}`);
             return res.status(200).send('Unauthorized');
         }
@@ -742,9 +881,10 @@ exports.whatsappWebhook = functions.runWith({ timeoutSeconds: 60, memory: '512MB
 
         // 5. Deduplication: Check if lead already exists by phone
         if (extracted.phone) {
+            const extractedVariants = getPhoneVariants(extracted.phone);
             const normalizedExtractedPhone = normalizePhone(extracted.phone);
             const existingSnapshot = await db.collection('opportunities')
-                .where('phone', '==', normalizedExtractedPhone)
+                .where('phone', 'in', extractedVariants)
                 .limit(1)
                 .get();
 
@@ -789,8 +929,14 @@ exports.whatsappWebhook = functions.runWith({ timeoutSeconds: 60, memory: '512MB
         const settingsSnap = await db.collection('settings').doc('huskyvoice').get();
         const testNumbers = settingsSnap.exists ? settingsSnap.data().test_phone_numbers || [] : [];
         const normalizedPhoneValue = normalizePhone(extracted.phone);
-        const normalizedTestNumbers = testNumbers.map(n => normalizePhone(n));
-        const isTestNumber = normalizedTestNumbers.includes(normalizedPhoneValue);
+        const phoneVariants = getPhoneVariants(extracted.phone);
+        let isTestNumber = false;
+        testNumbers.forEach(n => {
+            const testVariants = getPhoneVariants(n);
+            if (phoneVariants.some(v => testVariants.includes(v))) {
+                isTestNumber = true;
+            }
+        });
 
         // 8. Create Opportunity Document
         const displayLeadName = extracted.name || extracted.phone || 'WhatsApp Lead';
@@ -978,7 +1124,7 @@ exports.metaLeadWebhook = functions.runWith({ timeoutSeconds: 60, memory: '256MB
                 // Fetch lead details from Graph API
                 let leadDetails;
                 try {
-                    const response = await axios.get(`https://graph.facebook.com/v19.0/${leadgenId}?access_token=${META_ACCESS_TOKEN}`);
+                    const response = await axios.get(`https://graph.facebook.com/v19.0/${leadgenId}?fields=id,created_time,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id,is_organic,platform,field_data&access_token=${META_ACCESS_TOKEN}`);
                     leadDetails = response.data;
                 } catch (error) {
                     console.error(`[Meta Webhook] Error fetching lead ${leadgenId}:`, error.response?.data || error.message);
@@ -1005,9 +1151,9 @@ exports.metaLeadWebhook = functions.runWith({ timeoutSeconds: 60, memory: '256MB
                         } else if (field.name === 'last_name') {
                             if (fullName === 'Unknown Meta Lead') fullName = val;
                             else fullName = fullName + ' ' + val;
-                        } else if (field.name === 'phone_number' || field.name === 'work_phone_number') {
+                        } else if (field.name === 'phone_number' || field.name === 'work_phone_number' || field.name === 'phone') {
                             phone = val;
-                        } else if (field.name === 'email' || field.name === 'work_email') {
+                        } else if (field.name === 'email' || field.name === 'work_email' || field.name === 'work_email_address') {
                             email = val;
                         } else if (field.name === 'company_name') {
                             companyName = val;
@@ -1021,16 +1167,17 @@ exports.metaLeadWebhook = functions.runWith({ timeoutSeconds: 60, memory: '256MB
                 }
                 
                 const normalizedPhoneValue = normalizePhone(phone);
+                const phoneVariants = getPhoneVariants(phone);
                 
                 // Deduplication
-                if (normalizedPhoneValue) {
+                if (phone && phone !== '<test lead: dummy data for phone_number>') {
                     const existingSnapshot = await db.collection('opportunities')
-                        .where('phone', '==', normalizedPhoneValue)
+                        .where('phone', 'in', phoneVariants)
                         .limit(1)
                         .get();
                         
                     if (!existingSnapshot.empty) {
-                        console.log(`[Meta Webhook] Skip - Lead with phone ${normalizedPhoneValue} already exists.`);
+                        console.log(`[Meta Webhook] Skip - Lead with phone ${phone} already exists.`);
                         await processedRef.update({
                             status: 'duplicate_skipped',
                             leadId: existingSnapshot.docs[0].id
@@ -1056,6 +1203,8 @@ exports.metaLeadWebhook = functions.runWith({ timeoutSeconds: 60, memory: '256MB
                     your_website: website,
                     country: null,
                     source: 'Meta',
+                    meta_campaign: leadDetails.campaign_name || '',
+                    meta_adset: leadDetails.adset_name || '',
                     stage: '16', // assuming this is a default new lead stage
                     status: 'Open',
                     owner: assignedTo,
@@ -1066,7 +1215,14 @@ exports.metaLeadWebhook = functions.runWith({ timeoutSeconds: 60, memory: '256MB
                     notes: [
                         {
                             id: Date.now().toString(),
-                            content: `Lead captured from Meta Lead Ad (Ad ID: ${change.value.ad_id || 'Unknown'})` + (customNotes.length > 0 ? `\n\nForm Responses:\n${customNotes.join('\n')}` : ''),
+                            content: `Lead captured from Meta Lead Ad
+- Lead ID: ${leadgenId}
+- Campaign: ${leadDetails.campaign_name || 'Unknown'} (ID: ${change.value.campaign_id || 'Unknown'})
+- Ad Set: ${leadDetails.adset_name || 'Unknown'} (ID: ${change.value.adgroup_id || 'Unknown'})
+- Ad: ${leadDetails.ad_name || 'Unknown'} (ID: ${change.value.ad_id || 'Unknown'})
+- Form: ${leadDetails.form_name || 'Unknown'} (ID: ${change.value.form_id || 'Unknown'})
+- Platform: ${leadDetails.platform || 'Unknown'}
+- Page ID: ${change.value.page_id || 'Unknown'}` + (customNotes.length > 0 ? `\n\nForm Responses:\n${customNotes.join('\n')}` : ''),
                             createdAt: new Date().toISOString()
                         }
                     ],
@@ -1107,9 +1263,9 @@ exports.metaLeadWebhook = functions.runWith({ timeoutSeconds: 60, memory: '256MB
 });
 
 /**
- * Scheduled function to check for lead follow-up deadlines and new assignments every 10 minutes
+ * Scheduled function to check for lead follow-up deadlines and new assignments every 5 minutes
  */
-exports.deadlineAlerts = functions.pubsub.schedule('every 10 minutes').onRun(async (context) => {
+exports.deadlineAlerts = functions.pubsub.schedule('every 5 minutes').onRun(async (context) => {
     const db = getDb();
     const now = new Date();
     // Use a 24-hour sliding window to handle IST/UTC rollovers robustly
@@ -1126,11 +1282,9 @@ exports.deadlineAlerts = functions.pubsub.schedule('every 10 minutes').onRun(asy
 
     for (const doc of docs) {
         const lead = doc.data();
-        const leadCreatedAt = lead.createdAt?.toDate ? lead.createdAt.toDate() : new Date(lead.createdAt || 0);
         const today = getISTDateString();
 
-        // Skip leads outside our lookback window for assignments
-        // But we keep checking for deadlines regardless of creation date if they are Open
+        const cutoffDateStr = '2026-06-04'; // Apply escalations only for dates scheduled from June 4th, 2026 onward
 
         // --- 1. NEW ASSIGNMENT CHECK ---
         if (lead.followUpAssignee && lead.assignmentNotified === false) {
@@ -1144,9 +1298,9 @@ exports.deadlineAlerts = functions.pubsub.schedule('every 10 minutes').onRun(asy
             if (sent) await doc.ref.update({ assignmentNotified: true });
         }
 
-        // --- 2. REAL-TIME DEADLINE CHECK (10 Min Delay) ---
+        // --- 2. REAL-TIME DEADLINE CHECK (5 Min Delay) ---
         // If followUpDate is TODAY and we haven't notified for today yet
-        if (lead.followUpDate === today && lead.deadlineNotifiedAt !== today && lead.followUpAssignee) {
+        if (lead.followUpDate && lead.followUpDate >= cutoffDateStr && lead.followUpDate === today && lead.deadlineNotifiedAt !== today && lead.followUpAssignee) {
             console.log(`[Deadline Alerts] Real-time alert for ${lead.name} (Assignee: ${lead.followUpAssignee})`);
             const sent = await notifyTeamMember(lead.followUpAssignee, {
                 type: 'deadline',
@@ -1157,6 +1311,123 @@ exports.deadlineAlerts = functions.pubsub.schedule('every 10 minutes').onRun(asy
                 context: 'Follow-up is due today!'
             });
             if (sent) await doc.ref.update({ deadlineNotifiedAt: today });
+        }
+
+        // --- 3. MISSED FOLLOW-UP DATE ESCALATION ---
+        if (lead.followUpDate && lead.followUpDate >= cutoffDateStr && lead.followUpDate < today && lead.followUpEscalated !== lead.followUpDate) {
+            const assigneeRaw = lead.followUpAssignee || lead.owner || '';
+            const member = USERS.find(u => u.name.toLowerCase() === assigneeRaw.toLowerCase() || u.email.toLowerCase() === assigneeRaw.toLowerCase());
+            const ownerEmail = member ? member.email : assigneeRaw;
+            
+            console.log(`[Deadline Alerts] Escalating missed follow-up for ${lead.name} (Assignee: ${assigneeRaw})`);
+            const subject = `⚠️ URGENT: Missed Follow-up for ${lead.name}`;
+            const html = `
+                <div style="font-family: Arial, sans-serif; border: 2px solid #ef4444; border-radius: 8px; padding: 20px; max-width: 600px;">
+                    <div style="background-color: #ef4444; color: white; padding: 10px 20px; border-radius: 4px; text-align: center; font-weight: bold; font-size: 18px; margin-bottom: 20px;">
+                        ⚠️ URGENT: MISSED FOLLOW-UP
+                    </div>
+                    <p style="color: #374151; font-size: 16px;">The following lead has breached their scheduled follow-up date and requires immediate intervention.</p>
+                    <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
+                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Lead Name:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${lead.name}</td></tr>
+                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Assignee:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #ef4444;">${assigneeRaw || 'Unassigned'}</td></tr>
+                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Missed Date:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${lead.followUpDate}</td></tr>
+                    </table>
+                    <p style="margin-top: 20px; font-weight: bold; color: #ef4444; text-align: center;">An escalation penalty has been logged.</p>
+                </div>
+            `;
+            await sendEmailWithCC('dhiraj@digitalmojo.in', subject, html, ownerEmail);
+            await doc.ref.update({ followUpEscalated: lead.followUpDate });
+
+            // Track escalation in employee_metrics
+            if (ownerEmail) {
+                await db.collection('employee_metrics').doc(ownerEmail).set({
+                    escalationCount: admin.firestore.FieldValue.increment(1),
+                    name: member ? member.name : assigneeRaw,
+                    lastEscalation: now.toISOString()
+                }, { merge: true });
+            }
+        }
+
+        // --- 4. TASK DEADLINE ESCALATION (Time-based: WhatsApp @ Deadline, Email @ Deadline + 15 mins) ---
+        if (Array.isArray(lead.tasks)) {
+            let tasksUpdated = false;
+            const updatedTasks = lead.tasks.map(task => {
+                if (!task.isCompleted && task.dueDate && task.dueDate >= cutoffDateStr) {
+                    // Assuming India Standard Time (+05:30) for deadlines since the user operates in IST
+                    const dueTimeStr = task.dueTime || '23:59';
+                    const deadlineStr = `${task.dueDate}T${dueTimeStr}:00+05:30`;
+                    const deadlineTime = new Date(deadlineStr).getTime();
+                    const nowTime = now.getTime();
+
+                    // Ensure the date parsing is valid before proceeding
+                    if (!isNaN(deadlineTime)) {
+                        const assigneeRaw = task.assignee || lead.owner || '';
+                        const member = USERS.find(u => u.name.toLowerCase() === assigneeRaw.toLowerCase() || u.email.toLowerCase() === assigneeRaw.toLowerCase());
+                        const ownerEmail = member ? member.email : assigneeRaw;
+
+                        // Stage 1: Deadline Reached -> Send WhatsApp
+                        if (nowTime >= deadlineTime && !task.whatsappEscalated) {
+                            console.log(`[Deadline Alerts] Task WhatsApp Escalation for ${lead.name}: ${task.title}`);
+                            const contextMsg = `Task Missed: ${task.title} (Due: ${task.dueDate} ${dueTimeStr})`;
+                            
+                            // Notify Assignee
+                            if (ownerEmail) {
+                                notifyTeamMember(ownerEmail, {
+                                    type: 'deadline', leadName: lead.name, leadPhone: lead.contactPhone || lead.phone,
+                                    project: lead.project, followUpDate: lead.followUpDate, context: contextMsg
+                                });
+                            }
+                            // Notify Dhiraj
+                            notifyTeamMember('dhiraj@digitalmojo.in', {
+                                type: 'deadline', leadName: lead.name, leadPhone: lead.contactPhone || lead.phone,
+                                project: lead.project, followUpDate: lead.followUpDate, context: contextMsg
+                            });
+                            
+                            task.whatsappEscalated = now.toISOString();
+                            tasksUpdated = true;
+                        } 
+                        // Stage 2: 15 minutes past deadline -> Send Email
+                        else if (nowTime >= (deadlineTime + 15 * 60 * 1000) && !task.emailEscalated && task.whatsappEscalated) {
+                            console.log(`[Deadline Alerts] Task Email Escalation for ${lead.name}: ${task.title}`);
+                            const subject = `🚨 ESCALATION: Missed Task for ${lead.name}`;
+                            const html = `
+                                <div style="font-family: Arial, sans-serif; border: 2px solid #ef4444; border-radius: 8px; padding: 20px; max-width: 600px;">
+                                    <div style="background-color: #ef4444; color: white; padding: 10px 20px; border-radius: 4px; text-align: center; font-weight: bold; font-size: 18px; margin-bottom: 20px;">
+                                        🚨 ESCALATION: MISSED TASK DEADLINE
+                                    </div>
+                                    <p style="color: #374151; font-size: 16px;">A critical task is now <strong>15 minutes overdue</strong> and was not completed after the initial WhatsApp warning.</p>
+                                    <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
+                                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Lead Name:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${lead.name}</td></tr>
+                                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Task:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${task.title}</td></tr>
+                                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Assignee:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #ef4444;">${assigneeRaw || 'Unassigned'}</td></tr>
+                                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Due Time:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${task.dueDate} ${dueTimeStr}</td></tr>
+                                    </table>
+                                    <p style="margin-top: 20px; font-weight: bold; color: #ef4444; text-align: center;">An escalation penalty has been logged.</p>
+                                </div>
+                            `;
+                            sendEmailWithCC('dhiraj@digitalmojo.in', subject, html, ownerEmail);
+                            task.emailEscalated = now.toISOString();
+                            tasksUpdated = true;
+
+                            // Track escalation in employee_metrics
+                            if (ownerEmail) {
+                                // Add to a tracking array so we can perform the set outside the map, or since map isn't async we can just do it without await, 
+                                // but better to just trigger it here. It's safe to fire and forget inside map since it's a Firestore write
+                                db.collection('employee_metrics').doc(ownerEmail).set({
+                                    escalationCount: admin.firestore.FieldValue.increment(1),
+                                    name: member ? member.name : assigneeRaw,
+                                    lastEscalation: now.toISOString()
+                                }, { merge: true });
+                            }
+                        }
+                    }
+                }
+                return task;
+            });
+            
+            if (tasksUpdated) {
+                await doc.ref.update({ tasks: updatedTasks });
+            }
         }
     }
     return null;
@@ -1206,6 +1477,7 @@ exports.notifyDailyDeadlines = functions.pubsub.schedule('0 9 * * *')
 exports.checkUrgentLeads = functions.pubsub.schedule('every 1 minutes').onRun(async (context) => {
     const db = getDb();
     const nowIST = getInIST();
+    const realNowMs = Date.now();
 
     // Working Hours Check: Monday-Friday, 10:00 AM - 7:30 PM IST
     const day = nowIST.getDay();
@@ -1290,7 +1562,7 @@ exports.checkUrgentLeads = functions.pubsub.schedule('every 1 minutes').onRun(as
                 leadName: lead.name,
                 leadPhone: lead.contactPhone || lead.phone,
                 project: lead.project || 'New Lead',
-                context: `🚨 *URGENT*: Lead not contacted within 5 mins! | Order: ${lead.isPooled ? 'Staggered Pool' : 'Immediate'} | Assigned: ${ownerName}`
+                context: `🚨 *URGENT - 5 MINUTE SLA BREACHED* 🚨\n\n*Lead:* ${lead.name}\n\n⚠️ This lead was assigned but has not been contacted within the mandatory 5-minute window.\n\n*Type:* ${lead.isPooled ? 'Staggered Pool' : 'Immediate'}\n*Assigned to:* ${ownerName}\n\n_Automated Mojo CRM Alert_`
             };
 
             // Notify Dhiraj & Assignee
@@ -1307,6 +1579,261 @@ exports.checkUrgentLeads = functions.pubsub.schedule('every 1 minutes').onRun(as
             });
         }
     }
+
+    // --- NEW ESCALATION LOGIC ---
+    
+    // 1 & 2. Stage 16 (Yet to contact) Escalations
+    // We already have snapshot of Stage 16 open leads
+    for (const doc of snapshot.docs) {
+        const lead = doc.data();
+        
+        const assigneeRaw = lead.followUpAssignee || lead.owner;
+        const member = USERS.find(u =>
+            u.id === assigneeRaw ||
+            u.email === assigneeRaw ||
+            u.email?.toLowerCase() === (assigneeRaw || '').toLowerCase() ||
+            u.name?.toLowerCase() === (assigneeRaw || '').toLowerCase()
+        );
+        const ownerName = member ? member.name : (assigneeRaw || 'Unassigned');
+        const ownerEmail = member ? member.email : assigneeRaw;
+        
+        const createdAt = lead.createdAt ? new Date(lead.createdAt) : new Date();
+        const effectiveTimeInStage = getEffectiveTimeMs(createdAt.getTime(), realNowMs);
+        const oneDayMs = 24 * 60 * 60 * 1000;
+        
+        let updates = {};
+        
+        // 1. Stage 16: T+1 Days Alert
+        if (effectiveTimeInStage >= oneDayMs) {
+            const lastT1Sent = lead.lastEscalation16At ? new Date(lead.lastEscalation16At).getTime() : 0;
+            const effectiveTimeSinceLastT1 = lastT1Sent ? getEffectiveTimeMs(lastT1Sent, realNowMs) : effectiveTimeInStage;
+            if (effectiveTimeSinceLastT1 >= oneDayMs) {
+                console.log(`[Urgent Alerts] Stage 16 T+1 escalation for ${lead.name}`);
+                const subject = `Urgent Escalation: ${lead.name} untouched for >1 Day`;
+                const html = getEscalationEmailHtml(
+                    'Lead Untouched for > 24 Hours',
+                    lead.name,
+                    [
+                        { label: 'Current Stage', value: 'Yet to contact' },
+                        { label: 'Time Uncontacted', value: 'Over 24 Hours' },
+                        { label: 'Assignee', value: ownerName }
+                    ]
+                );
+                await sendEmailWithCC('dhiraj@digitalmojo.in', subject, html, ownerEmail);
+                updates.lastEscalation16At = new Date().toISOString();
+            }
+        }
+        
+        // 2. Stage 16: Post-call 2 hours & 10 mins logic
+        if (lead.calls && lead.calls.length > 0) {
+            const sortedCalls = [...lead.calls].sort((a,b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+            const latestCall = sortedCalls[0];
+            const callTime = new Date(latestCall.startTime);
+            const timeSinceCallMs = getEffectiveTimeMs(callTime.getTime(), realNowMs);
+            
+            const twoHoursMs = 2 * 60 * 60 * 1000;
+            const twoHours10MinMs = twoHoursMs + (10 * 60 * 1000);
+            
+            if (timeSinceCallMs >= twoHoursMs && timeSinceCallMs < twoHours10MinMs) {
+                if (lead.escalatedCallId2H !== latestCall.id) {
+                    console.log(`[Urgent Alerts] Stage 16 2-hour post-call warning for ${lead.name}`);
+                    if (member && member.phone) {
+                        await sendWatiSessionMessage(member.phone, `🚨 *URGENT - ACTION REQUIRED IMMEDIATELY* 🚨\n\n*Lead:* ${lead.name}\n\n⚠️ You called this lead *2 hours ago* but haven't updated the CRM stage. \n\n⏳ *You have 10 minutes* to update it before this is escalated to management.\n\n_Automated Mojo CRM Alert_`);
+                    }
+                    updates.escalatedCallId2H = latestCall.id;
+                }
+            }
+            
+            if (timeSinceCallMs >= twoHours10MinMs) {
+                if (lead.escalatedCallId2H10M !== latestCall.id) {
+                    console.log(`[Urgent Alerts] Stage 16 2h10m post-call escalation for ${lead.name}`);
+                    const subject = `Urgent Escalation: ${lead.name} stage not updated post-call`;
+                    const html = getEscalationEmailHtml(
+                        'Stage Not Updated Post-Call',
+                        lead.name,
+                        [
+                            { label: 'Issue', value: 'Called > 2 hours ago, but stage is still "Yet to contact"' },
+                            { label: 'Assignee', value: ownerName }
+                        ]
+                    );
+                    await sendEmailWithCC('dhiraj@digitalmojo.in', subject, html, ownerEmail);
+                    updates.escalatedCallId2H10M = latestCall.id;
+                }
+            }
+        }
+        
+        if (Object.keys(updates).length > 0) {
+            await doc.ref.update(updates);
+        }
+    }
+    
+    // 3. Stage 16.5 (Not Answering) T+1 Days Alert & Auto Task
+    const snapshot165 = await db.collection('opportunities')
+        .where('status', '==', 'Open')
+        .where('stage', '==', '16.5')
+        .get();
+        
+    for (const doc of snapshot165.docs) {
+        const lead = doc.data();
+        const assigneeRaw = lead.followUpAssignee || lead.owner;
+        const member = USERS.find(u =>
+            u.id === assigneeRaw ||
+            u.email === assigneeRaw ||
+            u.email?.toLowerCase() === (assigneeRaw || '').toLowerCase() ||
+            u.name?.toLowerCase() === (assigneeRaw || '').toLowerCase()
+        );
+        const ownerName = member ? member.name : (assigneeRaw || 'Unassigned');
+        const ownerEmail = member ? member.email : assigneeRaw;
+        
+        // Find latest note or call or entered stage time to prevent fake update loop holes
+        let baselineMs = lead.createdAt ? new Date(lead.createdAt).getTime() : 0;
+        if (lead.activities && lead.activities.length > 0) {
+            const stageEntryActivities = lead.activities.filter(a => a.type === 'status_change' && a.description && a.description.includes('Not Answering'));
+            if (stageEntryActivities.length > 0) {
+                const latestStageMs = Math.max(...stageEntryActivities.map(a => new Date(a.timestamp || 0).getTime()));
+                if (latestStageMs > baselineMs) baselineMs = latestStageMs;
+            }
+        }
+        
+        let lastActivityMs = baselineMs;
+
+        if (lead.notes && lead.notes.length > 0) {
+            const latestNoteMs = Math.max(...lead.notes.map(n => new Date(n.createdAt?.seconds ? n.createdAt.toDate() : n.createdAt || 0).getTime()));
+            if (latestNoteMs > lastActivityMs) lastActivityMs = latestNoteMs;
+        }
+        
+        if (lead.calls && lead.calls.length > 0) {
+            const latestCallMs = Math.max(...lead.calls.map(c => new Date(c.datetime || 0).getTime()));
+            if (latestCallMs > lastActivityMs) lastActivityMs = latestCallMs;
+        }
+
+        const lastActivityTime = new Date(lastActivityMs);
+        const timeSinceActivity = getEffectiveTimeMs(lastActivityMs, realNowMs);
+        const oneDayMs = 24 * 60 * 60 * 1000;
+        
+        if (timeSinceActivity >= oneDayMs) {
+            const last165Sent = lead.lastEscalation165At ? new Date(lead.lastEscalation165At).getTime() : 0;
+            const timeSinceLast165 = last165Sent ? getEffectiveTimeMs(last165Sent, realNowMs) : timeSinceActivity;
+            // Only alert once per 24h of inactivity
+            if (timeSinceLast165 >= oneDayMs) {
+                console.log(`[Urgent Alerts] Stage 16.5 T+1 escalation for ${lead.name}`);
+                const subject = `Urgent Escalation: ${lead.name} (Not Answering) no activity`;
+                const html = getEscalationEmailHtml(
+                    'No Activity for > 24 Hours',
+                    lead.name,
+                    [
+                        { label: 'Current Stage', value: 'Not Answering' },
+                        { label: 'Issue', value: 'No calls or notes added for over 24 hours.' },
+                        { label: 'Assignee', value: ownerName }
+                    ]
+                );
+                await sendEmailWithCC('dhiraj@digitalmojo.in', subject, html, ownerEmail);
+                
+                // Create auto task for next day
+                const tomorrow = new Date(nowIST);
+                tomorrow.setDate(tomorrow.getDate() + 1);
+                if (tomorrow.getDay() === 0) { // Skip Sunday
+                    tomorrow.setDate(tomorrow.getDate() + 1);
+                }
+                const yyyy = tomorrow.getFullYear();
+                const mm = String(tomorrow.getMonth() + 1).padStart(2, '0');
+                const dd = String(tomorrow.getDate()).padStart(2, '0');
+                
+                const newTask = {
+                    id: Math.random().toString(36).substr(2, 9),
+                    title: 'Follow up (Not Answering)',
+                    description: 'Auto-generated task: Lead has been unresponsive. Please try calling again or update notes.',
+                    dueDate: `${yyyy}-${mm}-${dd}`,
+                    isCompleted: false,
+                    assignee: member ? member.id : assigneeRaw,
+                    assignedBy: 'System'
+                };
+                
+                const tasks = lead.tasks || [];
+                tasks.push(newTask);
+                
+                await doc.ref.update({ 
+                    lastEscalation165At: new Date().toISOString(),
+                    tasks: tasks
+                });
+            }
+        }
+    }
+    
+    // 4. Missed Task Deadline alerts
+    const allOpenOpps = await db.collection('opportunities').where('status', '==', 'Open').get();
+    for (const doc of allOpenOpps.docs) {
+        const lead = doc.data();
+        if (!lead.tasks || lead.tasks.length === 0) continue;
+        
+        let anyTasksUpdated = false;
+        
+        for (let i = 0; i < lead.tasks.length; i++) {
+            let t = lead.tasks[i];
+            if (!t.isCompleted && t.dueDate && !t.deadlineEscalated) {
+                // Parse due date and time correctly in IST
+                const dueDateTimeStr = t.dueTime ? `${t.dueDate}T${t.dueTime}:00+05:30` : `${t.dueDate}T23:59:59+05:30`;
+                const dueDateDate = new Date(dueDateTimeStr);
+                
+                if (nowIST > dueDateDate) {
+                    const assigneeRaw = t.assignee || lead.followUpAssignee || lead.owner;
+                    const member = USERS.find(u =>
+                        u.id === assigneeRaw ||
+                        u.email === assigneeRaw ||
+                        u.email?.toLowerCase() === (assigneeRaw || '').toLowerCase() ||
+                        u.name?.toLowerCase() === (assigneeRaw || '').toLowerCase()
+                    );
+                    const ownerName = member ? member.name : (assigneeRaw || 'Unassigned');
+                    const ownerEmail = member ? member.email : assigneeRaw;
+                    const ownerPhone = member ? member.phone : null;
+                    const dhirajPhone = '919908398763';
+
+                    if (!t.whatsappEscalated) {
+                        console.log(`[Urgent Alerts] Missed task deadline WhatsApp for ${lead.name}`);
+                        const waMsg = `🚨 *Task Deadline Missed* 🚨\n\n*Lead:* ${lead.name}\n*Task:* ${t.title}\n*Assignee:* ${ownerName}\n\nPlease complete this task immediately!`;
+                        if (ownerPhone) {
+                            await sendWatiSessionMessage(ownerPhone, waMsg).catch(e => console.error(e));
+                        }
+                        await sendWatiSessionMessage(dhirajPhone, waMsg).catch(e => console.error(e));
+                        
+                        t.whatsappEscalated = true;
+                        t.deadlineMissedAt = new Date().toISOString(); // Record time of first alert
+                        anyTasksUpdated = true;
+                    } else if (!t.deadlineEscalated && t.deadlineMissedAt) {
+                        // Wait 2 hours before escalating via email (2 * 60 * 60 * 1000 = 7200000 ms)
+                        const missedAtMs = new Date(t.deadlineMissedAt).getTime();
+                        if (realNowMs >= missedAtMs + 7200000) {
+                            console.log(`[Urgent Alerts] Missed task deadline Email for ${lead.name}`);
+                            const subject = `Missed Task Deadline: ${t.title} for ${lead.name}`;
+                            const html = getEscalationEmailHtml(
+                                'Task Deadline Missed (Unresolved after 2 hours)',
+                                lead.name,
+                                [
+                                    { label: 'Task', value: t.title },
+                                    { label: 'Due Date', value: t.dueDate },
+                                    { label: 'Assignee', value: ownerName }
+                                ]
+                            );
+                            // Send async, don't await to avoid slowing down loop significantly
+                            sendEmailWithCC('dhiraj@digitalmojo.in', subject, html, ownerEmail);
+                            t.deadlineEscalated = true;
+                            anyTasksUpdated = true;
+                        }
+                    } else if (!t.deadlineEscalated && !t.deadlineMissedAt) {
+                         // Backwards compatibility for old tasks that might have bypassed whatsappEscalated somehow
+                         t.deadlineMissedAt = new Date().toISOString();
+                         t.whatsappEscalated = true;
+                         anyTasksUpdated = true;
+                    }
+                }
+            }
+        }
+        
+        if (anyTasksUpdated) {
+            await doc.ref.update({ tasks: lead.tasks });
+        }
+    }
+
     return null;
 });
 
@@ -1493,12 +2020,11 @@ async function performSalestrailSync(customStartTime = null) {
 
             // Collect all unique phone numbers for this lead
             const numbers = new Set();
-            if (data.phone) numbers.add(normalizePhone(data.phone));
-            if (data.contactPhone) numbers.add(normalizePhone(data.contactPhone));
+            if (data.phone) getPhoneVariants(data.phone).forEach(v => numbers.add(v));
+            if (data.contactPhone) getPhoneVariants(data.contactPhone).forEach(v => numbers.add(v));
             if (Array.isArray(data.secondaryPhones)) {
                 data.secondaryPhones.forEach(p => {
-                    const norm = normalizePhone(p);
-                    if (norm) numbers.add(norm);
+                    getPhoneVariants(p).forEach(v => numbers.add(v));
                 });
             }
 
@@ -1516,12 +2042,16 @@ async function performSalestrailSync(customStartTime = null) {
 
         for (const callRecord of calls) {
             const rawPhone = callRecord.number || callRecord.formattedNumber || '';
-            const normalizedPhone = normalizePhone(rawPhone);
-
-            if (!normalizedPhone) continue;
+            const phoneVariants = getPhoneVariants(rawPhone);
 
             // In-memory lookup: Much faster than Firestore queries in a loop
-            const docs = oppMap.get(normalizedPhone);
+            let docs = [];
+            for (const variant of phoneVariants) {
+                if (variant && oppMap.has(variant)) {
+                    docs = oppMap.get(variant);
+                    break;
+                }
+            }
             if (!docs || docs.length === 0) continue;
 
             matchCount++;
@@ -1933,9 +2463,10 @@ exports.metaWebhook = functions.https.onRequest(async (req, res) => {
             const unitsLeft = getField('how_many_units_are_left_to_sell_in_your_project') || '';
 
             // Dedup check
-            if (normalizedPhone) {
+            if (rawPhone) {
+                const phoneVariants = getPhoneVariants(rawPhone);
                 const existing = await db.collection('opportunities')
-                    .where('phone', '==', normalizedPhone)
+                    .where('phone', 'in', phoneVariants)
                     .limit(1)
                     .get();
                 if (!existing.empty) {
@@ -1955,6 +2486,8 @@ exports.metaWebhook = functions.https.onRequest(async (req, res) => {
                 phone: normalizedPhone,
                 value: 0, // Initial value
                 source: 'Meta Ads',
+                meta_campaign: leadData?.campaign_name || '',
+                meta_adset: leadData?.adset_name || '',
                 opportunityType: 'Meta Ads',
                 stage: '16',
                 status: 'Open',
@@ -2338,33 +2871,57 @@ exports.aiBackfillBatch = functions.runWith({ timeoutSeconds: 540, memory: '1GB'
 });
 
 /**
- * ONE-TIME FIX: Backfills the urgentAlertSent field for all historical leads
- * so they are picked up by the 5-minute scheduler.
+ * ONE-TIME FIX: Backfills the correct status (Won/Abandoned) for leads currently in closed/junk/dead stages.
  */
 exports.fixUrgentLeadsBackfill = functions.https.onRequest(async (req, res) => {
+    const db = getDb();
+    let updatedCount = 0;
+
     try {
-        const db = getDb();
-        const snapshot = await db.collection('opportunities')
-            .where('status', '==', 'Open')
-            .where('stage', '==', '16')
-            .get();
-
-        let updated = 0;
-        const promises = [];
-
-        snapshot.docs.forEach(doc => {
-            // Reset urgentAlertSent for ALL Stage 16 leads, even if calls were made.
-            // This ensures logic changes (like template formatting) are reapplied to stagnant leads.
-            promises.push(doc.ref.update({
-                urgentAlertSent: false,
-                updatedAt: new Date().toISOString()
-            }));
-            updated++;
+        const settingsDoc = await db.collection('settings').doc('pipeline').get();
+        const stagesArray = settingsDoc.exists ? settingsDoc.data().stages : [];
+        const stages = {};
+        stagesArray.forEach(stage => {
+            stages[stage.id] = stage.title?.toLowerCase() || '';
         });
 
-        await Promise.all(promises);
-        res.status(200).send(`Backfill complete. Updated ${updated} leads.`);
+        const snapshot = await db.collection('opportunities').get();
+        
+        let batch = db.batch();
+        let batchCount = 0;
+
+        for (const doc of snapshot.docs) {
+            const lead = doc.data();
+            const stageName = stages[lead.stage] || '';
+            let newStatus = null;
+
+            if (stageName.includes('junk') || stageName.includes('no budget') || stageName.includes('dead')) {
+                newStatus = 'Abandoned';
+            } else if (stageName.includes('won') || stageName.includes('closed') || stageName.includes('success')) {
+                newStatus = 'Won';
+            }
+
+            // Only update if the current status isn't already the correct one
+            if (newStatus && lead.status !== newStatus) {
+                batch.update(doc.ref, { status: newStatus });
+                batchCount++;
+                updatedCount++;
+                
+                if (batchCount === 450) {
+                    await batch.commit();
+                    batch = db.batch();
+                    batchCount = 0;
+                }
+            }
+        }
+        
+        if (batchCount > 0) {
+            await batch.commit();
+        }
+
+        res.status(200).send(`Successfully updated ${updatedCount} opportunities.`);
     } catch (error) {
+        console.error('Error backfilling status:', error);
         res.status(500).send(`Error: ${error.message}`);
     }
 });
@@ -2505,10 +3062,682 @@ exports.sendSalesAssets = functions.https.onCall(async (data, context) => {
 });
 
 // Export Huskyvoice integrations
+/**
+ * Core AI logic for analyzing a won/lost/abandoned lead.
+ */
+async function generateWinLossAnalysis(lead) {
+    let discoveryForms = [];
+    if (lead.contactPhone) {
+        const db = getDb();
+        const cleanDigits = lead.contactPhone.toString().replace(/\D/g, '');
+        const normalizedPhone = cleanDigits.slice(-10);
+        try {
+            const snapshot = await db.collection('discovery_responses')
+                .where('phone', '==', normalizedPhone)
+                .get();
+            discoveryForms = snapshot.docs.map(doc => doc.data());
+        } catch (e) {
+            console.error(`[WinLossAnalysis] Error fetching discovery forms for ${lead.name}:`, e.message);
+        }
+    }
+
+    const prompt = `You are an expert sales analyst and Zig Ziglar disciple.
+Analyze this lead which was marked as ${lead.status}.
+Lead Name: ${lead.name}
+Value: ${lead.value}
+Source: ${lead.source || 'N/A'}
+Budget: ${lead.budget || 'N/A'}
+Tags: ${JSON.stringify(lead.tags || [])}
+UTM Source: ${lead.utm_source || 'N/A'}
+UTM Medium: ${lead.utm_medium || 'N/A'}
+UTM Campaign: ${lead.utm_campaign || 'N/A'}
+Notes: ${JSON.stringify(lead.notes || [])}
+Calls: ${JSON.stringify((lead.calls || []).map(c => ({ duration: c.duration, rating: c.aiAnalysis?.rating, summary: c.aiAnalysis?.summary })))}
+Tasks: ${JSON.stringify(lead.tasks || [])}
+Activities: ${JSON.stringify(lead.activities || [])}
+Discovery Forms (Client filled out): ${JSON.stringify(discoveryForms)}
+
+Provide a JSON response with:
+{
+    "score": number (0-100) representing how well this lead was handled or the quality of the lead,
+    "combinedReason": "A 1-2 sentence punchy combined reason for why it was Won, Lost, or Abandoned based on the data.",
+    "isPotentialLead": boolean (true ONLY if it was Lost or Abandoned BUT shows high potential to be revived later based on budget/interest),
+    "potentialReason": "If isPotentialLead is true, explain exactly why in 1 sentence. Otherwise leave null."
+}
+Format your response as a valid JSON object only. No markdown.`;
+
+    try {
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const result = await model.generateContent(prompt);
+        let text = (await result.response).text().replace(/```json\n?|\n?```/g, '').trim();
+        return JSON.parse(text);
+    } catch (e) {
+        console.error(`[WinLossAnalysis] AI error for ${lead.name}:`, e.message);
+        return null;
+    }
+}
+
+/**
+ * Core AI logic for analyzing an open lead (client review).
+ */
+async function generateClientReview(lead) {
+    let discoveryForms = [];
+    if (lead.contactPhone) {
+        const db = getDb();
+        const cleanDigits = lead.contactPhone.toString().replace(/\D/g, '');
+        const normalizedPhone = cleanDigits.slice(-10);
+        try {
+            const snapshot = await db.collection('discovery_responses')
+                .where('phone', '==', normalizedPhone)
+                .get();
+            discoveryForms = snapshot.docs.map(doc => doc.data());
+        } catch (e) {
+            console.error(`[ClientReviewAnalysis] Error fetching discovery forms for ${lead.name}:`, e.message);
+        }
+    }
+
+    const prompt = `You are an expert sales manager and analyst.
+Analyze this active open lead and provide actionable feedback for the sales rep.
+Lead Name: ${lead.name}
+Value: ${lead.value}
+Stage: ${lead.stage}
+Source: ${lead.source || 'N/A'}
+Budget: ${lead.budget || 'N/A'}
+Tags: ${JSON.stringify(lead.tags || [])}
+UTM Source: ${lead.utm_source || 'N/A'}
+UTM Medium: ${lead.utm_medium || 'N/A'}
+UTM Campaign: ${lead.utm_campaign || 'N/A'}
+Notes: ${JSON.stringify(lead.notes || [])}
+Calls: ${JSON.stringify((lead.calls || []).map(c => ({ duration: c.duration, rating: c.aiAnalysis?.rating, summary: c.aiAnalysis?.summary })))}
+Tasks: ${JSON.stringify(lead.tasks || [])}
+Activities: ${JSON.stringify(lead.activities || [])}
+Discovery Forms (Client filled out): ${JSON.stringify(discoveryForms)}
+
+Provide a JSON response with:
+{
+    "strengths": "1-2 sentences explaining what the sales rep is doing right with this lead so far based on the history.",
+    "improvements": "1-2 sentences of actionable advice on what the sales rep can do to improve engagement or push the deal forward."
+}
+Format your response as a valid JSON object only. No markdown.`;
+
+    try {
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const result = await model.generateContent(prompt);
+        let text = (await result.response).text().replace(/```json\n?|\n?```/g, '').trim();
+        return JSON.parse(text);
+    } catch (e) {
+        console.error(`[ClientReviewAnalysis] AI error for ${lead.name}:`, e.message);
+        return null;
+    }
+}
+
+/**
+ * Scheduled function to analyze closed leads once a day.
+ */
+exports.dailyWinLossAnalysis = functions.pubsub.schedule('0 0 * * *').onRun(async (context) => {
+    console.log('[WinLossAnalysis] Starting daily analysis...');
+    const db = getDb();
+    
+    // We fetch leads that are closed but have no analysis yet.
+    // To avoid massive reads if there are thousands, we'll fetch up to 20 at a time.
+    const snapshot = await db.collection('opportunities')
+        .where('status', 'in', ['Won', 'Lost', 'Abandoned'])
+        .get();
+        
+    let processedCount = 0;
+    
+    for (const doc of snapshot.docs) {
+        const lead = doc.data();
+        if (lead.winLossAnalysis) continue; // Already analyzed
+        if (processedCount >= 20) break; // Limit daily batch
+        
+        console.log(`[WinLossAnalysis] Analyzing lead: ${lead.name}`);
+        const analysis = await generateWinLossAnalysis(lead);
+        
+        if (analysis) {
+            await doc.ref.update({
+                winLossAnalysis: {
+                    ...analysis,
+                    analyzedAt: new Date().toISOString()
+                }
+            });
+            processedCount++;
+        }
+    }
+    console.log(`[WinLossAnalysis] Completed daily analysis for ${processedCount} leads.`);
+});
+
+/**
+ * Callable function for manual Win/Loss analysis on demand.
+ */
+exports.analyzeWinLossManual = functions.https.onCall(async (data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Not authorized.');
+    
+    const { opportunityId } = data;
+    if (!opportunityId) throw new functions.https.HttpsError('invalid-argument', 'Missing opportunityId');
+    
+    const db = getDb();
+    const docRef = db.collection('opportunities').doc(opportunityId);
+    const docSnap = await docRef.get();
+    
+    if (!docSnap.exists) throw new functions.https.HttpsError('not-found', 'Lead not found');
+    
+    const lead = docSnap.data();
+    if (!['Won', 'Lost', 'Abandoned'].includes(lead.status)) {
+        throw new functions.https.HttpsError('failed-precondition', 'Lead must be Won, Lost, or Abandoned.');
+    }
+    
+    const analysis = await generateWinLossAnalysis(lead);
+    if (!analysis) {
+        throw new functions.https.HttpsError('internal', 'AI Analysis failed.');
+    }
+    
+    const updateData = {
+        winLossAnalysis: {
+            ...analysis,
+            analyzedAt: new Date().toISOString()
+        }
+    };
+    
+    await docRef.update(updateData);
+    return updateData.winLossAnalysis;
+});
+
 exports.huskyvoiceWebhook = huskyvoiceWebhook;
 exports.processPendingAICalls = processPendingAICalls;
 
 // Export helpers for use in other modules
 exports.sendLeadWelcomeSequence = sendLeadWelcomeSequence;
 exports.USERS = USERS;
+
+exports.analyzeClientReviewManual = functions.https.onCall(async (data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Not authorized.');
+    
+    const { opportunityId } = data;
+    if (!opportunityId) throw new functions.https.HttpsError('invalid-argument', 'Missing opportunityId');
+    
+    const db = getDb();
+    const docRef = db.collection('opportunities').doc(opportunityId);
+    const docSnap = await docRef.get();
+    
+    if (!docSnap.exists) throw new functions.https.HttpsError('not-found', 'Lead not found');
+    
+    const lead = docSnap.data();
+    
+    const analysis = await generateClientReview(lead);
+    if (!analysis) {
+        throw new functions.https.HttpsError('internal', 'AI Analysis failed.');
+    }
+    
+    const updateData = {
+        clientReview: {
+            ...analysis,
+            analyzedAt: new Date().toISOString()
+        }
+    };
+    
+    await docRef.update(updateData);
+    return updateData.clientReview;
+});
+
+async function generateGlobalWinLossSummary(type, leads) {
+    const prompt = `You are an expert sales director.
+Analyze the following ${type} leads from the recent period to find global trends, patterns, strengths, and weaknesses in the sales process.
+Here is the data for all ${type} leads, including notes, calls, tasks, and discovery form data:
+${JSON.stringify(leads.map(l => ({ 
+    name: l.name, 
+    value: l.value, 
+    source: l.source, 
+    tags: l.tags, 
+    reason: l.winLossAnalysis?.combinedReason, 
+    calls: (l.calls || []).slice(-3), 
+    tasks: (l.tasks || []).slice(-3),
+    notes: (l.notes || []).slice(-3),
+    activities: (l.activities || []).slice(-3),
+    discoveryForm: l.discoveryForm
+})))}
+
+Provide a JSON response with:
+{
+    "summary": "1-2 paragraphs summarizing the overarching trends and reasons for ${type === 'Won' ? 'winning' : 'losing'} these leads.",
+    "keyTakeaways": ["point 1", "point 2", "point 3"],
+    "actionableAdvice": "1-2 sentences of advice for the sales team based on these trends."
+}
+Format your response as a valid JSON object only. No markdown.`;
+
+    try {
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const result = await model.generateContent(prompt);
+        let text = (await result.response).text().replace(/```json\n?|\n?```/g, '').trim();
+        return JSON.parse(text);
+    } catch (e) {
+        console.error(`[GlobalWinLossAnalysis] AI error for ${type}:`, e.message);
+        return null;
+    }
+}
+
+async function createGlobalReport(db, wonLeads, lostLeads) {
+    const wonAnalysis = await generateGlobalWinLossSummary('Won', wonLeads);
+    const lostAnalysis = await generateGlobalWinLossSummary('Lost/Abandoned', lostLeads);
+    
+    const reportDoc = {
+        type: 'global_win_loss_summary',
+        createdAt: new Date().toISOString(),
+        data: {
+            wonLeadsAnalysis: {
+                overallSummary: wonAnalysis?.summary || 'No data generated.',
+                keySuccessFactors: wonAnalysis?.keyTakeaways || [],
+                actionableRecommendation: wonAnalysis?.actionableAdvice || 'N/A'
+            },
+            lostLeadsAnalysis: {
+                overallSummary: lostAnalysis?.summary || 'No data generated.',
+                commonFailureReasons: lostAnalysis?.keyTakeaways || [],
+                actionableRecommendation: lostAnalysis?.actionableAdvice || 'N/A'
+            },
+            executiveDirectives: [
+                "Review the actionable recommendations with the team in the next sync.",
+                "Reinforce key success factors from the Won leads on all ongoing deals.",
+                "Address common failure points by adding targeted coaching sessions."
+            ]
+        }
+    };
+    
+    await db.collection('system_metrics').add(reportDoc);
+    return reportDoc;
+}
+
+exports.dailyGlobalWinLossAnalysis = functions.pubsub.schedule('30 0 * * *').onRun(async (context) => {
+    console.log('[GlobalWinLossAnalysis] Starting daily global analysis...');
+    const db = getDb();
+    
+    const wonSnapshot = await db.collection('opportunities').where('status', '==', 'Won').get();
+    const lostSnapshot = await db.collection('opportunities').where('status', 'in', ['Lost', 'Abandoned']).get();
+    
+    const wonLeads = wonSnapshot.docs.map(d => d.data());
+    const lostLeads = lostSnapshot.docs.map(d => d.data());
+    
+    await createGlobalReport(db, wonLeads, lostLeads);
+    console.log('[GlobalWinLossAnalysis] Completed global analysis.');
+});
+
+exports.triggerGlobalWinLossAnalysisManual = functions.https.onCall(async (data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Not authorized.');
+    
+    const db = getDb();
+    
+    const wonSnapshot = await db.collection('opportunities').where('status', '==', 'Won').get();
+    const lostSnapshot = await db.collection('opportunities').where('status', 'in', ['Lost', 'Abandoned']).get();
+    
+    const wonLeads = wonSnapshot.docs.map(d => d.data());
+    const lostLeads = lostSnapshot.docs.map(d => d.data());
+    
+    return await createGlobalReport(db, wonLeads, lostLeads);
+});
+
+exports.analyzeOpenLeadsPotential = functions.https.onCall(async (data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Not authorized.');
+    
+    const db = getDb();
+    
+    // Fetch all leads that are not Won/Lost/Abandoned (i.e. they are open)
+    // The system uses 'Open' for active leads
+    const cutoffDate = new Date('2026-06-05T00:00:00Z');
+    const openSnapshot = await db.collection('opportunities')
+        .where('status', '==', 'Open')
+        .get();
+    
+    const allLeads = openSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    // Filter leads created after the cutoff date
+    const leads = allLeads.filter(l => {
+        let createdAtDate = null;
+        if (l.createdAt && l.createdAt.toDate) {
+            createdAtDate = l.createdAt.toDate();
+        } else if (l.createdAt) {
+            createdAtDate = new Date(l.createdAt);
+        }
+        return createdAtDate && createdAtDate >= cutoffDate;
+    });
+    
+    let updatedCount = 0;
+    
+    // Process in batches of 10 to avoid token limits and timeouts
+    for (let i = 0; i < leads.length; i += 10) {
+        const batchLeads = leads.slice(i, i + 10);
+        
+        const prompt = `You are an expert sales analyst.
+Review the following open leads and assign an "aiPotentialScore" (0-100) based on their likelihood to convert.
+Leads with strong engagement, multiple follow-ups, explicit interest, or solid budget/timeline should score >80.
+
+Leads Data:
+${JSON.stringify(batchLeads.map(l => ({
+    id: l.id,
+    name: l.name,
+    value: l.value,
+    notes: (l.notes || []).map(n => n.content).slice(-3),
+    calls: (l.calls || []).map(c => c.summary || c.transcription).slice(-3)
+})))}
+
+Respond ONLY with a JSON array of objects:
+[
+  { "id": "lead_id", "aiPotentialScore": 85, "reason": "brief reason" }
+]
+No markdown, just raw JSON.`;
+
+        try {
+            const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+            const result = await model.generateContent(prompt);
+            let text = (await result.response).text().replace(/```json\n?|\n?```/g, '').trim();
+            const results = JSON.parse(text);
+            
+            const firestoreBatch = db.batch();
+            for (const res of results) {
+                const leadRef = db.collection('opportunities').doc(res.id);
+                firestoreBatch.update(leadRef, {
+                    aiPotentialScore: res.aiPotentialScore,
+                    isHighPotential: res.aiPotentialScore >= 80,
+                    potentialReason: res.reason
+                });
+                updatedCount++;
+            }
+            await firestoreBatch.commit();
+        } catch (e) {
+            console.error('Error analyzing potential for batch', e);
+        }
+    }
+    
+    return { success: true, updatedCount };
+});
+
+exports.analyzeSingleLeadPotential = functions.https.onCall(async (data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Not authorized.');
+    
+    const { leadId } = data;
+    if (!leadId) throw new functions.https.HttpsError('invalid-argument', 'leadId is required');
+
+    const db = getDb();
+    const leadRef = db.collection('opportunities').doc(leadId);
+    const doc = await leadRef.get();
+    
+    if (!doc.exists) {
+        throw new functions.https.HttpsError('not-found', 'Lead not found');
+    }
+
+    const lead = doc.data();
+    
+    const prompt = `You are an expert sales analyst.
+Review the following lead and assign an "aiPotentialScore" (0-100) based on their likelihood to convert.
+The lead is currently in the "${lead.stage}" stage. Learn from all the interactions and current info to score it.
+Leads with strong engagement, multiple follow-ups, explicit interest, or solid budget/timeline should score >80.
+
+Lead Data:
+${JSON.stringify({
+    name: lead.name,
+    value: lead.value,
+    stage: lead.stage,
+    notes: (lead.notes || []).map(n => n.content),
+    calls: (lead.calls || []).map(c => c.summary || c.transcription),
+    customFields: {
+        budget: lead.budget,
+        source: lead.source,
+        company: lead.companyName
+    }
+})}
+
+Respond ONLY with raw JSON:
+{ "aiPotentialScore": 85, "reason": "brief reason" }`;
+
+    try {
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const result = await model.generateContent(prompt);
+        let text = (await result.response).text().replace(/\`\`\`json\n?|\n?\`\`\`/g, '').trim();
+        const res = JSON.parse(text);
+        
+        await leadRef.update({
+            aiPotentialScore: res.aiPotentialScore,
+            isHighPotential: res.aiPotentialScore >= 80,
+            potentialReason: res.reason
+        });
+        
+        return { success: true, score: res.aiPotentialScore, reason: res.reason };
+    } catch (e) {
+        console.error('Error analyzing single lead potential', e);
+        throw new functions.https.HttpsError('internal', 'Failed to score lead');
+    }
+});
+
+exports.onOpportunityUpdateScoring = functions.firestore
+    .document('opportunities/{opportunityId}')
+    .onUpdate(async (change, context) => {
+        const before = change.before.data();
+        const after = change.after.data();
+
+        // Prevent infinite loops: only trigger if meaningful data changed
+        const stageChanged = before.stage !== after.stage;
+        const notesChanged = (before.notes?.length || 0) !== (after.notes?.length || 0);
+        const callsChanged = (before.calls?.length || 0) !== (after.calls?.length || 0);
+        const valueChanged = before.value !== after.value;
+        
+        if (!stageChanged && !notesChanged && !callsChanged && !valueChanged) return null;
+
+        // Cutoff date check (June 5, 2026)
+        const cutoffDate = new Date('2026-06-05T00:00:00Z');
+        let createdAtDate = null;
+        if (after.createdAt && after.createdAt.toDate) {
+            createdAtDate = after.createdAt.toDate();
+        } else if (after.createdAt) {
+            createdAtDate = new Date(after.createdAt);
+        }
+
+        if (createdAtDate && createdAtDate < cutoffDate) {
+            return null; // Skip old leads
+        }
+
+        const db = getDb();
+
+        const prompt = `You are an expert sales analyst.
+Review the following lead and assign an "aiPotentialScore" (0-100) based on their likelihood to convert.
+The lead's stage, notes, or calls have just been updated. Learn from these interactions and try scoring it better every time as it moves through the pipeline.
+Leads with strong engagement, multiple follow-ups, explicit interest, or solid budget/timeline should score >80.
+
+Lead Data:
+${JSON.stringify({
+    name: after.name,
+    value: after.value,
+    stage: after.stage,
+    notes: (after.notes || []).map(n => n.content),
+    calls: (after.calls || []).map(c => c.summary || c.transcription),
+    customFields: {
+        budget: after.budget,
+        source: after.source,
+        company: after.companyName
+    }
+})}
+
+Respond ONLY with raw JSON:
+{ "aiPotentialScore": 85, "reason": "brief reason" }`;
+
+        try {
+            const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+            const result = await model.generateContent(prompt);
+            let text = (await result.response).text().replace(/\`\`\`json\n?|\n?\`\`\`/g, '').trim();
+            const res = JSON.parse(text);
+            
+            return change.after.ref.update({
+                aiPotentialScore: res.aiPotentialScore,
+                isHighPotential: res.aiPotentialScore >= 80,
+                potentialReason: res.reason
+            });
+        } catch (e) {
+            console.error('Error dynamic scoring for lead', context.params.opportunityId, e);
+            return null;
+        }
+    });
+
+/**
+ * Webhook to receive incoming data from external systems.
+ * Expects a static API key for authentication.
+ * Does not create leads directly, just logs them into 'incoming_webhooks' collection.
+ */
+exports.incomingWebhook = functions.runWith({ timeoutSeconds: 30 }).region('us-central1').https.onRequest(async (req, res) => {
+    // Enable CORS
+    res.set('Access-Control-Allow-Origin', '*');
+    if (req.method === 'OPTIONS') {
+        res.set('Access-Control-Allow-Methods', 'POST');
+        res.set('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+        res.status(204).send('');
+        return;
+    }
+
+    if (req.method !== 'POST') {
+        return res.status(405).send('Method Not Allowed');
+    }
+
+    const apiKey = req.headers['x-api-key'] || req.query.apiKey;
+    if (apiKey !== 'dm-secret-key-2026') {
+        console.warn(`[Incoming Webhook] Unauthorized access attempt. Key provided: ${apiKey}`);
+        return res.status(401).send('Unauthorized: Invalid API Key');
+    }
+
+    const payload = req.body;
+    console.log(`[Incoming Webhook] Received payload:`, JSON.stringify(payload).substring(0, 200));
+
+    try {
+        const db = getDb();
+        const logDoc = {
+            source: payload.source || 'external_system',
+            payload: payload,
+            receivedAt: new Date().toISOString()
+        };
+
+        await db.collection('incoming_webhooks').add(logDoc);
+        console.log(`[Incoming Webhook] Payload logged successfully.`);
+        
+        return res.status(200).json({ success: true, message: 'Webhook received and logged' });
+    } catch (error) {
+        console.error(`[Incoming Webhook] Error saving payload:`, error);
+        return res.status(500).json({ success: false, error: 'Failed to process webhook' });
+    }
+});
+
+/**
+ * Helper function to trigger outgoing webhooks
+ */
+async function triggerOutgoingWebhooks(event, data) {
+    const db = getDb();
+    const axios = require('axios');
+    
+    try {
+        const possibleEvents = [event];
+        if (event === 'lead.created') possibleEvents.push('Lead Created');
+        if (event === 'lead.status_changed') possibleEvents.push('Status Changed');
+
+        const webhooksSnapshot = await db.collection('webhooks')
+            .where('isActive', '==', true)
+            .where('events', 'array-contains-any', possibleEvents)
+            .get();
+            
+        if (webhooksSnapshot.empty) {
+            return;
+        }
+
+        const webhooks = webhooksSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        console.log(`[Outgoing Webhooks] Triggering ${webhooks.length} webhooks for event: ${event}`);
+
+        const promises = webhooks.map(async (webhook) => {
+            try {
+                const headers = { 'Content-Type': 'application/json' };
+                if (webhook.secret) {
+                    headers['x-webhook-secret'] = webhook.secret;
+                }
+                
+                await axios.post(webhook.url, {
+                    event: event,
+                    timestamp: new Date().toISOString(),
+                    data: data
+                }, { 
+                    headers: headers,
+                    timeout: 10000 // 10s timeout
+                });
+                
+                console.log(`[Outgoing Webhooks] Successfully triggered webhook ${webhook.name} (${webhook.url})`);
+                
+                // Update lastTriggered
+                await db.collection('webhooks').doc(webhook.id).update({
+                    lastTriggered: new Date().toISOString()
+                });
+            } catch (err) {
+                console.error(`[Outgoing Webhooks] Failed to trigger webhook ${webhook.name} (${webhook.url}):`, err.message);
+            }
+        });
+
+        await Promise.allSettled(promises);
+    } catch (error) {
+        console.error(`[Outgoing Webhooks] Error triggering webhooks:`, error);
+    }
+}
+
+/**
+ * Trigger for Lead Created event
+ */
+exports.onOpportunityCreatedWebhooks = functions.firestore
+    .document('opportunities/{opportunityId}')
+    .onCreate(async (snap, context) => {
+        const newLead = snap.data();
+        await triggerOutgoingWebhooks('lead.created', { id: context.params.opportunityId, ...newLead });
+    });
+
+/**
+ * Trigger for Status Changed event
+ */
+exports.onOpportunityUpdatedWebhooks = functions.firestore
+    .document('opportunities/{opportunityId}')
+    .onUpdate(async (change, context) => {
+        const before = change.before.data();
+        const after = change.after.data();
+
+        if (before.stage !== after.stage) {
+            await triggerOutgoingWebhooks('lead.status_changed', {
+                id: context.params.opportunityId,
+                oldStage: before.stage,
+                newStage: after.stage,
+                stage: after.stage, // Added for EasyInsights mapping
+                leadName: after.name
+            });
+        }
+    });
+
+/**
+ * Proxy to test outgoing webhooks securely (avoids CORS issues on the client)
+ */
+exports.testWebhook = functions.https.onCall(async (data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Not authorized.');
+    
+    const { url, secret } = data;
+    if (!url) {
+        throw new functions.https.HttpsError('invalid-argument', 'Missing webhook URL.');
+    }
+
+    const axios = require('axios');
+    
+    try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (secret) {
+            headers['x-webhook-secret'] = secret;
+        }
+
+        const response = await axios.post(url, {
+            event: 'test',
+            timestamp: new Date().toISOString(),
+            data: { message: 'Test payload from Mojo CRM' }
+        }, {
+            headers: headers,
+            timeout: 10000
+        });
+
+        return { success: true, status: response.status };
+    } catch (error) {
+        console.error('[Test Webhook] Error:', error.message);
+        throw new functions.https.HttpsError('internal', `Test failed: ${error.message}`);
+    }
+});
 

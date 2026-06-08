@@ -30,6 +30,10 @@ export interface Task {
   assignee?: string;
   assignedBy?: string; // Email or ID of the user who assigned this task
   createdBy?: string; // Email or ID of the user who created this task (for permissions)
+  completedAt?: string;
+  completedBy?: string;
+  whatsappEscalated?: string;
+  emailEscalated?: string;
 }
 
 export interface Note {
@@ -85,6 +89,8 @@ export interface Opportunity {
   utm_source?: string;
   utm_medium?: string;
   utm_campaign?: string;
+  meta_campaign?: string;
+  meta_adset?: string;
   your_website?: string;
   budget?: string;
   calendar?: string;
@@ -98,6 +104,8 @@ export interface Opportunity {
   followUpAssignee?: string;
   assignmentNotified?: boolean;
   urgentAlertSent?: boolean;
+  deadlineNotifiedAt?: string;
+  followUpEscalated?: string;
   activities?: OpportunityActivity[];
   calls?: Call[];
   lastSalesAssetsSent?: string;
@@ -108,6 +116,19 @@ export interface Opportunity {
   aiSummary?: string;
   aiSuggestions?: string[];
   aiCallDuration?: number;
+  winLossAnalysis?: {
+    score: number;
+    combinedReason: string;
+    isPotentialLead: boolean;
+    potentialReason?: string;
+    analyzedAt: string;
+  };
+  clientReview?: {
+    strengths: string;
+    improvements: string;
+    analyzedAt: string;
+  };
+  statusChangedAt?: string;
 }
 
 export interface PipelineColumn {
@@ -194,5 +215,18 @@ export interface DiscoveryResponse {
     hotButtons: string[];
     concerns: string[];
   };
-  aiAnalyzedAt?: string;
+}
+
+export interface WebhookConfig {
+  id: string;
+  url: string;
+  events: ('Lead Created' | 'Status Changed')[];
+  secret?: string;
+  createdAt: string;
+}
+
+export interface IncomingWebhookLog {
+  id: string;
+  payload: any;
+  receivedAt: string;
 }
