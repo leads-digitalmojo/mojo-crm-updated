@@ -89,6 +89,10 @@ export interface Opportunity {
   utm_source?: string;
   utm_medium?: string;
   utm_campaign?: string;
+  utm_term?: string;
+  utm_content?: string;
+  gclid?: string;
+  fbclid?: string;
   meta_campaign?: string;
   meta_adset?: string;
   your_website?: string;
@@ -100,7 +104,7 @@ export interface Opportunity {
   notes?: Note[];
   followUpDate?: string;
   followUpRead?: boolean;
-  opportunityType?: 'Real Estate' | 'Others' | 'adcalculator' | 'meta ads';
+  opportunityType?: 'Real Estate' | 'Others' | 'adcalculator' | 'meta ads' | 'free audit landing page';
   followUpAssignee?: string;
   assignmentNotified?: boolean;
   urgentAlertSent?: boolean;

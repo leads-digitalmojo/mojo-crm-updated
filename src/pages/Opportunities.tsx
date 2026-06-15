@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, memo, useCallback } from 'react';
 import Papa from 'papaparse';
 import { Plus, MoreHorizontal, X, Trash2, LayoutGrid, List as ListIcon, Search, Filter, Download, ChevronDown, User, Phone, Mail, Tag, CheckSquare, MessageSquare, Clock, ArrowUpDown, Calendar, Edit2, Target, BarChart, XCircle, TrendingUp, Users, Save, PhoneIncoming, PhoneOutgoing, Timer, RefreshCw, Play, Volume2, Zap, Award, Sparkles, Star } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../lib/firebase';
 import { useStore } from '../store/useStore';
 import { api } from '../services/api';
-import { DndContext, DragEndEvent, useDraggable, useDroppable } from '@dnd-kit/core';
+import { DndContext, DragEndEvent, useDraggable, useDroppable, useSensor, useSensors, PointerSensor } from '@dnd-kit/core';
 import { Modal } from '../components/Modal';
 import { Opportunity, Task, Note, OpportunityActivity, Appointment } from '../types';
 import toast from 'react-hot-toast';
@@ -126,6 +126,7 @@ const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete,
     const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
         id: item.id,
     });
+    const [confirmingDelete, setConfirmingDelete] = useState(false);
 
     const style = transform ? {
         transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
@@ -134,7 +135,7 @@ const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete,
     // Handle click separately to avoid conflict with drag
     const handleCardClick = (e: React.MouseEvent) => {
         // Only trigger edit if not dragging
-        if (!isDragging) {
+        if (!isDragging && !confirmingDelete) {
             onEdit(item);
         }
     };
@@ -311,26 +312,59 @@ const DraggableCard = memo<DraggableCardProps>(({ item, color, onEdit, onDelete,
                         </div>
                     )}
                 </div>
+            </div>
 
-                {/* Footer */}
-                <div className="flex justify-end items-center border-t border-gray-100 pt-3">
+            {/* Footer - outside clickable area */}
+            <div className="flex justify-end items-center border-t border-gray-100 pt-3">
+                {confirmingDelete ? (
+                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                        <span className="text-xs text-gray-600 font-medium">Delete?</span>
+                        <button
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                setConfirmingDelete(false);
+                                onDelete(item.id);
+                            }}
+                            className="px-2 py-0.5 text-xs bg-red-600 text-white rounded hover:bg-red-700 font-medium"
+                        >
+                            Yes
+                        </button>
+                        <button
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                setConfirmingDelete(false);
+                            }}
+                            className="px-2 py-0.5 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 font-medium"
+                        >
+                            No
+                        </button>
+                    </div>
+                ) : (
                     <button
+                        onPointerDown={(e) => e.stopPropagation()}
                         onClick={(e) => {
                             e.stopPropagation();
-                            onDelete(item.id);
+                            e.preventDefault();
+                            setConfirmingDelete(true);
                         }}
                         className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
                         title="Delete Opportunity"
                     >
                         <Trash2 size={14} />
                     </button>
-                </div>
+                )}
             </div>
         </div>
     );
 });
 
 DraggableCard.displayName = 'DraggableCard';
+
+
 
 interface DroppableColumnProps {
     stage: { id: string; title: string; color: string };
@@ -631,6 +665,14 @@ const Opportunities: React.FC = () => {
     const { opportunities, appointments, stages, stageCounts, stagePagination, fetchOpportunities, fetchOpportunitiesByStage, loadMoreByStage, fetchStageCounts, updateOpportunity, addOpportunity, deleteOpportunity, bulkDeleteOpportunities, updateStages, currentUser, addAppointment, fetchAppointments, contacts, fetchContacts, addContact, updateContact, deleteContact, hasMoreOpportunities, loadMoreOpportunities, isLoading, discoveryResponses, fetchDiscoveryResponses } = useStore();
     const [isAnalyzingPotential, setIsAnalyzingPotential] = useState(false);
     const [scoringLeads, setScoringLeads] = useState<Set<string>>(new Set());
+
+    const sensors = useSensors(
+        useSensor(PointerSensor, {
+            activationConstraint: {
+                distance: 5,
+            },
+        })
+    );
 
     const handleScoreSingleLead = async (e: React.MouseEvent, leadId: string) => {
         e.stopPropagation();
@@ -1099,9 +1141,51 @@ const Opportunities: React.FC = () => {
                 const isDestExempt = destId === '0' || destId === '0.5' || destTitle.includes('junk') || destTitle.includes('no budget');
 
                 if (!isDestExempt) {
-                    toast.error("Stage change requires a new note. Please update via the modal.");
-                    handleOpenModal(opportunity, overId);
-                    return;
+                    const todayStr = new Date().toLocaleDateString('en-CA');
+                    const hasNoteToday = Array.isArray(opportunity.notes) && opportunity.notes.some(note => {
+                        let noteDate = new Date(0);
+                        if (note.createdAt) {
+                            if (typeof note.createdAt === 'string') noteDate = new Date(note.createdAt);
+                            else if (typeof (note.createdAt as any).toDate === 'function') noteDate = (note.createdAt as any).toDate();
+                            else noteDate = new Date(note.createdAt as any);
+                        }
+                        return !isNaN(noteDate.getTime()) && noteDate.toLocaleDateString('en-CA') === todayStr;
+                    });
+                    
+                    const hasTaskToday = Array.isArray(opportunity.tasks) && opportunity.tasks.some(task => {
+                        let taskDate = new Date(0);
+                        if ((task as any).createdAt) {
+                            if (typeof (task as any).createdAt === 'string') taskDate = new Date((task as any).createdAt);
+                            else if (typeof ((task as any).createdAt as any).toDate === 'function') taskDate = ((task as any).createdAt as any).toDate();
+                            else taskDate = new Date((task as any).createdAt as any);
+                        } else {
+                            const parsedId = parseInt(task.id);
+                            if (!isNaN(parsedId) && parsedId > 1000000000000) {
+                                taskDate = new Date(parsedId);
+                            }
+                        }
+                        return !isNaN(taskDate.getTime()) && taskDate.toLocaleDateString('en-CA') === todayStr;
+                    });
+
+                    if (!hasNoteToday && !hasTaskToday) {
+                        toast.error("Stage change requires a note or task for today. Please update via the modal.");
+                        handleOpenModal(opportunity, overId);
+                        return;
+                    } else {
+                        // Allow drag and drop
+                        try {
+                            const newStatus = destTitle.includes('won') || destTitle.includes('closed') || destTitle.includes('success') ? 'Won' : 'Open';
+                            await updateOpportunity(activeId, { 
+                                stage: overId,
+                                status: newStatus
+                            });
+                            toast.success(`Lead moved to ${destStage?.title || 'new stage'}`);
+                            return;
+                        } catch (error) {
+                            toast.error(`Failed to move lead`);
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -1158,6 +1242,8 @@ const Opportunities: React.FC = () => {
             const isTargetExempt = tStage === '0' || tStage === '0.5' || targetTitle.includes('junk') || targetTitle.includes('no budget');
             const isActuallyChanging = targetStage && String(targetStage) !== String(opp.stage);
 
+            // Removed shouldClearFollowUp logic to preserve existing followUpDate
+
             setFormData({
                 name: opp.name || '',
                 value: oppValue,
@@ -1173,7 +1259,7 @@ const Opportunities: React.FC = () => {
                 tags: Array.isArray(opp.tags) ? opp.tags.join(', ') : '',
                 calendar: opp.calendar || '',
                 contactValue: linkedContact?.Value || 'Standard',
-                followUpDate: (isActuallyChanging && !isTargetExempt) ? '' : (opp.followUpDate || ''),
+                followUpDate: opp.followUpDate || '',
                 opportunityType: opp.opportunityType || '',
                 followUpAssignee: opp.followUpAssignee || '',
                 meta_campaign: opp.meta_campaign || '',
@@ -1271,15 +1357,62 @@ const Opportunities: React.FC = () => {
         }
 
         // 2. NEW ENFORCEMENT: Any stage change requires a NEW note and a follow-up date (EXCEPT for Junk and No Budget)
+        const isFollowUpDateChanging = existingOpp && existingOpp.followUpDate !== formData.followUpDate;
+
         if (isStageChanging && !isJunkOrNoBudget) {
+            const todayStr = new Date().toLocaleDateString('en-CA');
+            const hasNoteToday = Array.isArray(existingOpp?.notes) && existingOpp.notes.some(note => {
+                let noteDate = new Date(0);
+                if (note.createdAt) {
+                    if (typeof note.createdAt === 'string') noteDate = new Date(note.createdAt);
+                    else if (typeof (note.createdAt as any).toDate === 'function') noteDate = (note.createdAt as any).toDate();
+                    else noteDate = new Date(note.createdAt as any);
+                }
+                return !isNaN(noteDate.getTime()) && noteDate.toLocaleDateString('en-CA') === todayStr;
+            });
+
+            const hasTaskToday = Array.isArray(existingOpp?.tasks) && existingOpp.tasks.some(task => {
+                let taskDate = new Date(0);
+                if ((task as any).createdAt) {
+                    if (typeof (task as any).createdAt === 'string') taskDate = new Date((task as any).createdAt);
+                    else if (typeof ((task as any).createdAt as any).toDate === 'function') taskDate = ((task as any).createdAt as any).toDate();
+                    else taskDate = new Date((task as any).createdAt as any);
+                } else {
+                    const parsedId = parseInt(task.id);
+                    if (!isNaN(parsedId) && parsedId > 1000000000000) {
+                        taskDate = new Date(parsedId);
+                    }
+                }
+                return !isNaN(taskDate.getTime()) && taskDate.toLocaleDateString('en-CA') === todayStr;
+            });
+
+            const hasNewNote = notes.some(note => !existingOpp?.notes?.some(oldNote => oldNote.id === note.id));
+            const hasNewTask = tasks.some(task => !existingOpp?.tasks?.some(oldTask => oldTask.id === task.id));
+
+            if (isFollowUpDateChanging) {
+                if (!hasNewNote && !hasNewTask) {
+                    toast.error('A new note or task is required when changing the follow-up date');
+                    setActiveTab('notes');
+                    return;
+                }
+            } else {
+                if (!hasNewNote && !hasNewTask && !hasNoteToday && !hasTaskToday) {
+                    toast.error('A note or task for today is required for any stage change');
+                    setActiveTab('notes');
+                    return;
+                }
+            }
+
             if (!formData.followUpDate) {
                 toast.error('Follow-up Date is required for stage change');
                 setActiveTab('details');
                 return;
             }
+        } else if (isFollowUpDateChanging && !isJunkOrNoBudget) {
+            // "if chnge follow up date then add note"
             const hasNewNote = notes.some(note => !existingOpp?.notes?.some(oldNote => oldNote.id === note.id));
             if (!hasNewNote) {
-                toast.error('A new note is required for any stage change');
+                toast.error('A new note is required when changing the follow-up date');
                 setActiveTab('notes');
                 return;
             }
@@ -1418,17 +1551,16 @@ const Opportunities: React.FC = () => {
         }
     };
 
-    const handleDelete = async (id: string) => {
-        if (window.confirm('Are you sure you want to delete this opportunity? This will also delete the associated contact.')) {
-            try {
-                await deleteOpportunity(id);
-                toast.success('Opportunity and associated contact deleted successfully');
-            } catch (error) {
-                console.error("Error deleting opportunity:", error);
-                toast.error('Failed to delete opportunity');
-            }
+    const handleDelete = useCallback(async (id: string) => {
+        try {
+            await deleteOpportunity(id);
+            toast.success('Opportunity deleted successfully');
+        } catch (error) {
+            console.error("Error deleting opportunity:", error);
+            toast.error('Failed to delete opportunity');
         }
-    };
+    }, [deleteOpportunity]);
+
 
     const formatTimeToAMPM = (timeStr: string) => {
         if (!timeStr) return '';
@@ -2092,6 +2224,7 @@ const Opportunities: React.FC = () => {
                                         <option value="">All Types</option>
                                         <option value="Real Estate">Real Estate</option>
                                         <option value="adcalculator">Ad Calculator</option>
+                                        <option value="free audit landing page">Free Audit Landing Page</option>
                                         <option value="Meta Ads">Meta Ads</option>
                                         <option value="Others">Others</option>
                                     </select>
@@ -2165,7 +2298,7 @@ const Opportunities: React.FC = () => {
             {/* Content */}
             <div className="flex-1 min-h-0 overflow-hidden px-4 md:px-0">
                 {viewMode === 'board' ? (
-                    <DndContext onDragEnd={handleDragEnd}>
+                    <DndContext onDragEnd={handleDragEnd} sensors={sensors}>
                         <div className="h-full overflow-x-auto overflow-y-hidden md:custom-scrollbar pb-4 md:px-1 snap-x snap-mandatory scroll-smooth">
                             {/* Desktop/Tablet Board View & Mobile Slider */}
                             <div className="flex h-full gap-4 min-w-max md:px-1">
@@ -2613,7 +2746,7 @@ const Opportunities: React.FC = () => {
                                                                         } else if (formData.stage === '10' && newStage !== '10') {
                                                                             newStatus = 'Open';
                                                                         }
-                                                                        setFormData({ ...formData, stage: newStage, status: newStatus, followUpDate: '' });
+                                                                        setFormData({ ...formData, stage: newStage, status: newStatus });
                                                                     }}
                                                                     className="w-full p-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:ring-brand-blue focus:border-brand-blue"
                                                                 >
@@ -2673,6 +2806,7 @@ const Opportunities: React.FC = () => {
                                                                 <option value="">Select Type</option>
                                                                 <option value="Real Estate">Real Estate</option>
                                                                 <option value="adcalculator">Ad Calculator</option>
+                                                                <option value="free audit landing page">Free Audit Landing Page</option>
                                                                 <option value="Meta Ads">Meta Ads</option>
                                                                 <option value="Others">Others</option>
                                                             </select>
@@ -3439,6 +3573,7 @@ const Opportunities: React.FC = () => {
                                                             <button
                                                                 onClick={() => {
                                                                     setNewTaskTitle('');
+                                                                    setNewTaskAssignee(formData.followUpAssignee || formData.owner || currentUser?.email || '');
                                                                     setIsAddingTask(true);
                                                                 }}
                                                                 className="w-full py-3 border-2 border-dashed border-gray-300 rounded-lg text-brand-blue font-medium hover:bg-blue-50 hover:border-brand-blue transition-colors flex items-center justify-center gap-2"
@@ -3464,7 +3599,11 @@ const Opportunities: React.FC = () => {
                                                                     </div>
                                                                     <h4 className="text-gray-900 font-medium mb-1">No tasks found</h4>
                                                                     <p className="text-gray-500 text-sm mb-4">There are no tasks available</p>
-                                                                    <button onClick={() => setIsAddingTask(true)} className="px-4 py-2 bg-brand-blue text-white rounded-lg text-sm font-medium hover:bg-brand-blue/90">
+                                                                    <button onClick={() => {
+                                                                        setNewTaskTitle('');
+                                                                        setNewTaskAssignee(formData.followUpAssignee || formData.owner || currentUser?.email || '');
+                                                                        setIsAddingTask(true);
+                                                                    }} className="px-4 py-2 bg-brand-blue text-white rounded-lg text-sm font-medium hover:bg-brand-blue/90">
                                                                         + Add New Task
                                                                     </button>
                                                                 </div>

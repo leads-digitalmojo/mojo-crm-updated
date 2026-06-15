@@ -26,6 +26,7 @@ import Logs from './pages/Logs';
 import RedFlags from './pages/RedFlags';
 import CommandCentre from './pages/CommandCentre';
 import Webhooks from './pages/Webhooks';
+import Escalations from './pages/Escalations';
 
 const PrivateRoute = () => {
   const { currentUser, isLoadingAuth } = useStore();
@@ -143,6 +144,11 @@ const App: React.FC = () => {
             <Route path="/command-centre" element={
               <ErrorBoundary fallbackName="Command Centre">
                 <CommandCentre />
+              </ErrorBoundary>
+            } />
+            <Route path="/escalations" element={
+              <ErrorBoundary fallbackName="Escalations Dashboard">
+                <Escalations />
               </ErrorBoundary>
             } />
             <Route path="/webhooks" element={

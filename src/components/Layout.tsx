@@ -18,7 +18,8 @@ import {
   Activity,
   ShieldAlert,
   Building2,
-  Webhook
+  Webhook,
+  AlertOctagon
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import CommandPalette from './CommandPalette';
@@ -26,7 +27,7 @@ import DemoBanner from './DemoBanner';
 import { api } from '../services/api';
 import { Opportunity } from '../types';
 import toast from 'react-hot-toast';
-import { isUserAdmin } from '../lib/admin';
+import { isUserAdmin, getEmployeeName, normalizeOwner } from '../lib/admin';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -42,6 +43,15 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [todayOpportunities, setTodayOpportunities] = useState<Opportunity[]>([]);
   const profileRef = useRef<HTMLDivElement>(null);
   const remindersRef = useRef<HTMLDivElement>(null);
+
+  const isAdmin = isUserAdmin(currentUser?.email);
+  const myName = currentUser?.id ? getEmployeeName(currentUser.id) : '';
+
+  const getAssigneeName = (rawAssignee: string | undefined | null) => {
+    if (!rawAssignee || rawAssignee.toLowerCase() === 'unassigned') return 'Unassigned';
+    const normalizedId = normalizeOwner(rawAssignee);
+    return getEmployeeName(normalizedId || rawAssignee);
+  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -94,6 +104,28 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     return count;
   }, [opportunities, currentUser]);
 
+  const pendingEscalationsCount = useMemo(() => {
+    let count = 0;
+    opportunities.forEach(opp => {
+      if (opp.followUpEscalated === opp.followUpDate && opp.followUpDate && opp.followUpEscalated) {
+        const assignee = getAssigneeName(opp.followUpAssignee || opp.owner);
+        if (isAdmin || assignee === myName) count++;
+      } else if (opp.urgentAlertSent) {
+        const assignee = getAssigneeName(opp.owner);
+        if (isAdmin || assignee === myName) count++;
+      }
+      
+      if (Array.isArray(opp.tasks)) {
+        opp.tasks.forEach(task => {
+          if (!task.isCompleted && task.emailEscalated) {
+            const assignee = getAssigneeName(task.assignee || opp.owner);
+            if (isAdmin || assignee === myName) count++;
+          }
+        });
+      }
+    });
+    return count;
+  }, [opportunities, isAdmin, myName]);
 
   const todayReminders = useMemo(() => {
     return todayOpportunities.filter(opp => {
@@ -121,6 +153,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       { path: '/calendars', icon: CalendarDays, label: 'Calendars' },
       { path: '/opportunities', icon: Target, label: 'Opportunities' },
       { path: '/tasks', icon: CheckSquare, label: 'Tasks' },
+      { path: '/escalations', icon: AlertOctagon, label: 'Escalations' },
       { path: '/command-centre', icon: Building2, label: 'Command Centre' },
       { path: '/settings', icon: Settings, label: 'Settings' },
     ];
@@ -177,6 +210,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 {item.path === '/tasks' && pendingTasksCount > 0 && (
                   <span className="ml-auto bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
                     {pendingTasksCount}
+                  </span>
+                )}
+                {item.path === '/escalations' && pendingEscalationsCount > 0 && (
+                  <span className="ml-auto bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
+                    {pendingEscalationsCount}
                   </span>
                 )}
               </Link>
@@ -387,6 +425,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                   {item.path === '/tasks' && pendingTasksCount > 0 && (
                     <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold px-1 rounded-full min-w-[14px] h-3.5 flex items-center justify-center">
                       {pendingTasksCount}
+                    </span>
+                  )}
+                  {item.path === '/escalations' && pendingEscalationsCount > 0 && (
+                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold px-1 rounded-full min-w-[14px] h-3.5 flex items-center justify-center">
+                      {pendingEscalationsCount}
                     </span>
                   )}
                 </div>

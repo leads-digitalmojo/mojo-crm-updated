@@ -691,36 +691,58 @@ export const useStore = create<AppState>((set, get) => ({
     },
     deleteOpportunity: async (id) => {
         const opp = get().opportunities.find((o) => o.id === id);
-        if (opp?.contactId) {
-            await api.contacts.delete(opp.contactId);
-            set((state) => ({
-                contacts: state.contacts.filter((c) => c.id !== opp.contactId),
-            }));
-        }
-        await api.opportunities.delete(id);
+        const previousOpps = get().opportunities;
+        const previousContacts = get().contacts;
+
+        // Optimistic UI Update
         set((state) => ({
             opportunities: state.opportunities.filter((o) => o.id !== id),
+            contacts: opp?.contactId ? state.contacts.filter((c) => c.id !== opp.contactId) : state.contacts
         }));
-        // Refresh stage counts after deletion
-        get().fetchStageCounts();
+
+        try {
+            const promises = [];
+            if (opp?.contactId) {
+                promises.push(api.contacts.delete(opp.contactId).catch(err => console.warn("Contact already deleted or failed:", err)));
+            }
+            promises.push(api.opportunities.delete(id));
+            await Promise.all(promises);
+            // Refresh stage counts after deletion
+            get().fetchStageCounts();
+        } catch (error) {
+            console.error("Failed to delete opportunity:", error);
+            // Revert state if the API call fails
+            set({ opportunities: previousOpps, contacts: previousContacts });
+            throw error;
+        }
     },
     bulkDeleteOpportunities: async (ids: string[]) => {
         const opps = get().opportunities.filter((o) => ids.includes(o.id));
         const contactIds = opps.map((o) => o.contactId).filter((id): id is string => !!id);
 
-        if (contactIds.length > 0) {
-            await api.contacts.bulkDelete(contactIds);
-            set((state) => ({
-                contacts: state.contacts.filter((c) => !contactIds.includes(c.id)),
-            }));
-        }
+        const previousOpps = get().opportunities;
+        const previousContacts = get().contacts;
 
-        await api.opportunities.bulkDelete(ids);
+        // Optimistic UI Update
         set((state) => ({
             opportunities: state.opportunities.filter((o) => !ids.includes(o.id)),
+            contacts: contactIds.length > 0 ? state.contacts.filter((c) => !contactIds.includes(c.id)) : state.contacts
         }));
-        // Refresh stage counts after bulk deletion
-        get().fetchStageCounts();
+
+        try {
+            const promises = [];
+            if (contactIds.length > 0) {
+                promises.push(api.contacts.bulkDelete(contactIds).catch(err => console.warn("Contacts bulk delete failed:", err)));
+            }
+            promises.push(api.opportunities.bulkDelete(ids));
+            await Promise.all(promises);
+            // Refresh stage counts after bulk deletion
+            get().fetchStageCounts();
+        } catch (error) {
+            console.error("Failed to bulk delete opportunities:", error);
+            set({ opportunities: previousOpps, contacts: previousContacts });
+            throw error;
+        }
     },
 
     fetchAppointments: async () => {
@@ -898,13 +920,10 @@ export const useStore = create<AppState>((set, get) => ({
         });
 
         // ✅ Real-time opportunities listener — ensures WhatsApp leads appear instantly
+        // NOTE: Use the server snapshot as the authoritative source so deletions propagate correctly.
+        // Merging (additive-only) was causing deleted items to reappear after deletion.
         const unsubOpps = api.opportunities.subscribe((data) => {
-            set((state) => {
-                // Merge real-time data with existing optimistic updates
-                const existingMap = new Map(state.opportunities.map(o => [o.id, o]));
-                data.forEach(opp => existingMap.set(opp.id, opp));
-                return { opportunities: Array.from(existingMap.values()) };
-            });
+            set({ opportunities: data });
         });
 
         // Store unsubscribe functions if needed for cleanup

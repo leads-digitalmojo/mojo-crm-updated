@@ -673,6 +673,34 @@ async function getNextAssignee() {
 }
 
 /**
+ * Helper to map specific campaign names and assignees
+ */
+function getCampaignMapping(campaignName) {
+    if (!campaignName) return null;
+    const trimmed = campaignName.trim();
+    const normalized = trimmed.replace(/\u2013/g, '-').replace(/\s+/g, ' ');
+    const target1 = "DM-03/06/26-100-IG-TO-ENG-(Adv+OT)-ABO-DB-TST-LO-HV-HYD - Copy 2";
+    const target1Original = "DM-03/06/26-100-IG-TO-ENG-(Adv+OT)-ABO-DB-TST-LO-HV-HYD – Copy 2";
+    const target2 = "DM-20/05/2026-200-AL-MO-TO-LG-(CALALBusinessOwners-AdvBusinessOwners)-CBO-DB-SCL-NA-T1";
+
+    if (normalized === target1 || trimmed === target1Original) {
+        return {
+            newName: "Ebook",
+            assigneeEmail: "rupal@digitalmojo.in",
+            assigneeName: "Rupal"
+        };
+    }
+    if (normalized === target2) {
+        return {
+            newName: "Free Audit",
+            assigneeEmail: "veda@digitalmojo.in",
+            assigneeName: "Veda"
+        };
+    }
+    return null;
+}
+
+/**
  * Proxy to fetch recording audio securely.
  * Prevents the browser from showing a Basic Auth popup.
  */
@@ -1187,7 +1215,20 @@ exports.metaLeadWebhook = functions.runWith({ timeoutSeconds: 60, memory: '256MB
                 }
                 
                 // Assign
-                const { name: assignedName, email: assignedTo } = await getNextAssignee();
+                const rawCampaign = leadDetails.campaign_name || '';
+                const mapping = getCampaignMapping(rawCampaign);
+                
+                let assignedName, assignedTo;
+                let metaCampaign = rawCampaign;
+                if (mapping) {
+                    assignedName = mapping.assigneeName;
+                    assignedTo = mapping.assigneeEmail;
+                    metaCampaign = mapping.newName;
+                } else {
+                    const nextAssignee = await getNextAssignee();
+                    assignedName = nextAssignee.name;
+                    assignedTo = nextAssignee.email;
+                }
                 
                 // Create Lead
                 const opportunityData = {
@@ -1203,7 +1244,7 @@ exports.metaLeadWebhook = functions.runWith({ timeoutSeconds: 60, memory: '256MB
                     your_website: website,
                     country: null,
                     source: 'Meta',
-                    meta_campaign: leadDetails.campaign_name || '',
+                    meta_campaign: metaCampaign,
                     meta_adset: leadDetails.adset_name || '',
                     stage: '16', // assuming this is a default new lead stage
                     status: 'Open',
@@ -1271,7 +1312,14 @@ exports.deadlineAlerts = functions.pubsub.schedule('every 5 minutes').onRun(asyn
     // Use a 24-hour sliding window to handle IST/UTC rollovers robustly
     const lookbackWindow = new Date(now.getTime() - (24 * 60 * 60 * 1000));
 
-    console.log(`[Deadline Alerts] Cron starting. Now: ${now.toISOString()}, Lookback: ${lookbackWindow.toISOString()}`);
+    // Working Hours Check: 10:00 AM - 7:00 PM IST
+    const nowIST = getInIST(now);
+    const currentHourIST = nowIST.getHours();
+    const currentMinIST = nowIST.getMinutes();
+    const timeValIST = currentHourIST * 100 + currentMinIST;
+    const isWorkingHours = timeValIST >= 1000 && timeValIST <= 1900;
+
+    console.log(`[Deadline Alerts] Cron starting. Now: ${now.toISOString()}, Lookback: ${lookbackWindow.toISOString()}, isWorkingHours: ${isWorkingHours}`);
 
     const snapshot = await db.collection('opportunities')
         .where('status', '==', 'Open')
@@ -1313,38 +1361,59 @@ exports.deadlineAlerts = functions.pubsub.schedule('every 5 minutes').onRun(asyn
             if (sent) await doc.ref.update({ deadlineNotifiedAt: today });
         }
 
-        // --- 3. MISSED FOLLOW-UP DATE ESCALATION ---
-        if (lead.followUpDate && lead.followUpDate >= cutoffDateStr && lead.followUpDate < today && lead.followUpEscalated !== lead.followUpDate) {
+        // --- 3. MISSED FOLLOW-UP DATE ESCALATION (2-Tier: WhatsApp Day 1, Email Day 2+) ---
+        if (lead.followUpDate && lead.followUpDate >= cutoffDateStr && lead.followUpDate < today) {
             const assigneeRaw = lead.followUpAssignee || lead.owner || '';
             const member = USERS.find(u => u.name.toLowerCase() === assigneeRaw.toLowerCase() || u.email.toLowerCase() === assigneeRaw.toLowerCase());
             const ownerEmail = member ? member.email : assigneeRaw;
-            
-            console.log(`[Deadline Alerts] Escalating missed follow-up for ${lead.name} (Assignee: ${assigneeRaw})`);
-            const subject = `⚠️ URGENT: Missed Follow-up for ${lead.name}`;
-            const html = `
-                <div style="font-family: Arial, sans-serif; border: 2px solid #ef4444; border-radius: 8px; padding: 20px; max-width: 600px;">
-                    <div style="background-color: #ef4444; color: white; padding: 10px 20px; border-radius: 4px; text-align: center; font-weight: bold; font-size: 18px; margin-bottom: 20px;">
-                        ⚠️ URGENT: MISSED FOLLOW-UP
-                    </div>
-                    <p style="color: #374151; font-size: 16px;">The following lead has breached their scheduled follow-up date and requires immediate intervention.</p>
-                    <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
-                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Lead Name:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${lead.name}</td></tr>
-                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Assignee:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #ef4444;">${assigneeRaw || 'Unassigned'}</td></tr>
-                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Missed Date:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${lead.followUpDate}</td></tr>
-                    </table>
-                    <p style="margin-top: 20px; font-weight: bold; color: #ef4444; text-align: center;">An escalation penalty has been logged.</p>
-                </div>
-            `;
-            await sendEmailWithCC('dhiraj@digitalmojo.in', subject, html, ownerEmail);
-            await doc.ref.update({ followUpEscalated: lead.followUpDate });
 
-            // Track escalation in employee_metrics
-            if (ownerEmail) {
-                await db.collection('employee_metrics').doc(ownerEmail).set({
-                    escalationCount: admin.firestore.FieldValue.increment(1),
-                    name: member ? member.name : assigneeRaw,
-                    lastEscalation: now.toISOString()
-                }, { merge: true });
+            // Calculate yesterday's date string in IST
+            const yesterdayDate = new Date(now.getTime() + 5.5 * 60 * 60 * 1000); // convert to IST
+            yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+            const yesterdayStr = `${yesterdayDate.getFullYear()}-${String(yesterdayDate.getMonth() + 1).padStart(2, '0')}-${String(yesterdayDate.getDate()).padStart(2, '0')}`;
+
+            // Tier 1: WhatsApp warning on day 1 (followUpDate == yesterday)
+            if (lead.followUpDate >= yesterdayStr && lead.followUpWhatsappWarned !== lead.followUpDate) {
+                console.log(`[Deadline Alerts] Missed follow-up WhatsApp warning for ${lead.name} (Assignee: ${assigneeRaw})`);
+                if (member && member.phone) {
+                    await sendWatiSessionMessage(member.phone, `⚠️ *MISSED FOLLOW-UP WARNING* ⚠️\n\n*Lead:* ${lead.name}\n*Scheduled Date:* ${lead.followUpDate}\n\n⏳ You missed your scheduled follow-up. Please act on this lead today to avoid an escalation penalty.\n\n_Automated Mojo CRM Alert_`);
+                }
+                await doc.ref.update({ followUpWhatsappWarned: lead.followUpDate });
+            }
+
+            // Tier 2: Email escalation on day 2+ (followUpDate < yesterday, i.e. 48+ hours past)
+            if (lead.followUpDate < yesterdayStr && lead.followUpEscalated !== lead.followUpDate) {
+                if (isWorkingHours) {
+                    console.log(`[Deadline Alerts] Escalating missed follow-up (48h+) for ${lead.name} (Assignee: ${assigneeRaw})`);
+                    const subject = `⚠️ URGENT: Missed Follow-up for ${lead.name}`;
+                    const html = `
+                        <div style="font-family: Arial, sans-serif; border: 2px solid #ef4444; border-radius: 8px; padding: 20px; max-width: 600px;">
+                            <div style="background-color: #ef4444; color: white; padding: 10px 20px; border-radius: 4px; text-align: center; font-weight: bold; font-size: 18px; margin-bottom: 20px;">
+                                ⚠️ URGENT: MISSED FOLLOW-UP (48h+)
+                            </div>
+                            <p style="color: #374151; font-size: 16px;">The following lead has breached their scheduled follow-up date by more than 48 hours and requires immediate intervention.</p>
+                            <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
+                                <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Lead Name:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${lead.name}</td></tr>
+                                <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Assignee:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #ef4444;">${assigneeRaw || 'Unassigned'}</td></tr>
+                                <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Missed Date:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${lead.followUpDate}</td></tr>
+                            </table>
+                            <p style="margin-top: 20px; font-weight: bold; color: #ef4444; text-align: center;">An escalation penalty has been logged.</p>
+                        </div>
+                    `;
+                    await sendEmailWithCC('dhiraj@digitalmojo.in', subject, html, ownerEmail);
+                    await doc.ref.update({ followUpEscalated: lead.followUpDate });
+
+                    // Track escalation in employee_metrics
+                    if (ownerEmail) {
+                        await db.collection('employee_metrics').doc(ownerEmail).set({
+                            escalationCount: admin.firestore.FieldValue.increment(1),
+                            name: member ? member.name : assigneeRaw,
+                            lastEscalation: now.toISOString()
+                        }, { merge: true });
+                    }
+                } else {
+                    console.log(`[Deadline Alerts] Skipped missed follow-up email escalation for ${lead.name} because outside 10am-7pm`);
+                }
             }
         }
 
@@ -1388,36 +1457,40 @@ exports.deadlineAlerts = functions.pubsub.schedule('every 5 minutes').onRun(asyn
                         } 
                         // Stage 2: 15 minutes past deadline -> Send Email
                         else if (nowTime >= (deadlineTime + 15 * 60 * 1000) && !task.emailEscalated && task.whatsappEscalated) {
-                            console.log(`[Deadline Alerts] Task Email Escalation for ${lead.name}: ${task.title}`);
-                            const subject = `🚨 ESCALATION: Missed Task for ${lead.name}`;
-                            const html = `
-                                <div style="font-family: Arial, sans-serif; border: 2px solid #ef4444; border-radius: 8px; padding: 20px; max-width: 600px;">
-                                    <div style="background-color: #ef4444; color: white; padding: 10px 20px; border-radius: 4px; text-align: center; font-weight: bold; font-size: 18px; margin-bottom: 20px;">
-                                        🚨 ESCALATION: MISSED TASK DEADLINE
+                            if (isWorkingHours) {
+                                console.log(`[Deadline Alerts] Task Email Escalation for ${lead.name}: ${task.title}`);
+                                const subject = `🚨 ESCALATION: Missed Task for ${lead.name}`;
+                                const html = `
+                                    <div style="font-family: Arial, sans-serif; border: 2px solid #ef4444; border-radius: 8px; padding: 20px; max-width: 600px;">
+                                        <div style="background-color: #ef4444; color: white; padding: 10px 20px; border-radius: 4px; text-align: center; font-weight: bold; font-size: 18px; margin-bottom: 20px;">
+                                            🚨 ESCALATION: MISSED TASK DEADLINE
+                                        </div>
+                                        <p style="color: #374151; font-size: 16px;">A critical task is now <strong>15 minutes overdue</strong> and was not completed after the initial WhatsApp warning.</p>
+                                        <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
+                                            <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Lead Name:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${lead.name}</td></tr>
+                                            <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Task:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${task.title}</td></tr>
+                                            <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Assignee:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #ef4444;">${assigneeRaw || 'Unassigned'}</td></tr>
+                                            <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Due Time:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${task.dueDate} ${dueTimeStr}</td></tr>
+                                        </table>
+                                        <p style="margin-top: 20px; font-weight: bold; color: #ef4444; text-align: center;">An escalation penalty has been logged.</p>
                                     </div>
-                                    <p style="color: #374151; font-size: 16px;">A critical task is now <strong>15 minutes overdue</strong> and was not completed after the initial WhatsApp warning.</p>
-                                    <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
-                                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Lead Name:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${lead.name}</td></tr>
-                                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Task:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${task.title}</td></tr>
-                                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Assignee:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #ef4444;">${assigneeRaw || 'Unassigned'}</td></tr>
-                                        <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Due Time:</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${task.dueDate} ${dueTimeStr}</td></tr>
-                                    </table>
-                                    <p style="margin-top: 20px; font-weight: bold; color: #ef4444; text-align: center;">An escalation penalty has been logged.</p>
-                                </div>
-                            `;
-                            sendEmailWithCC('dhiraj@digitalmojo.in', subject, html, ownerEmail);
-                            task.emailEscalated = now.toISOString();
-                            tasksUpdated = true;
+                                `;
+                                sendEmailWithCC('dhiraj@digitalmojo.in', subject, html, ownerEmail);
+                                task.emailEscalated = now.toISOString();
+                                tasksUpdated = true;
 
-                            // Track escalation in employee_metrics
-                            if (ownerEmail) {
-                                // Add to a tracking array so we can perform the set outside the map, or since map isn't async we can just do it without await, 
-                                // but better to just trigger it here. It's safe to fire and forget inside map since it's a Firestore write
-                                db.collection('employee_metrics').doc(ownerEmail).set({
-                                    escalationCount: admin.firestore.FieldValue.increment(1),
-                                    name: member ? member.name : assigneeRaw,
-                                    lastEscalation: now.toISOString()
-                                }, { merge: true });
+                                // Track escalation in employee_metrics
+                                if (ownerEmail) {
+                                    // Add to a tracking array so we can perform the set outside the map, or since map isn't async we can just do it without await, 
+                                    // but better to just trigger it here. It's safe to fire and forget inside map since it's a Firestore write
+                                    db.collection('employee_metrics').doc(ownerEmail).set({
+                                        escalationCount: admin.firestore.FieldValue.increment(1),
+                                        name: member ? member.name : assigneeRaw,
+                                        lastEscalation: now.toISOString()
+                                    }, { merge: true });
+                                }
+                            } else {
+                                console.log(`[Deadline Alerts] Skipped task email escalation for ${lead.name} because outside 10am-7pm`);
                             }
                         }
                     }
@@ -1479,13 +1552,13 @@ exports.checkUrgentLeads = functions.pubsub.schedule('every 1 minutes').onRun(as
     const nowIST = getInIST();
     const realNowMs = Date.now();
 
-    // Working Hours Check: Monday-Friday, 10:00 AM - 7:30 PM IST
+    // Working Hours Check: Monday-Friday, 10:00 AM - 7:00 PM IST
     const day = nowIST.getDay();
     const hour = nowIST.getHours();
     const min = nowIST.getMinutes();
     const timeVal = hour * 100 + min;
 
-    if (day === 0 || day === 6 || timeVal < 1000 || timeVal > 1930) {
+    if (day === 0 || day === 6 || timeVal < 1000 || timeVal > 1900) {
         console.log(`[Urgent Alerts] Outside working hours (${nowIST.toString()}). skipping...`);
         return null;
     }
@@ -1542,7 +1615,7 @@ exports.checkUrgentLeads = functions.pubsub.schedule('every 1 minutes').onRun(as
             sessionPoolCounts[sKey] = rank + 1;
         }
 
-        const alertDueTime = new Date(effectiveTimerStart.getTime() + 5 * 60 * 1000);
+        const alertDueTime = new Date(effectiveTimerStart.getTime() + 30 * 60 * 1000);
 
         if (nowIST >= alertDueTime) {
             console.log(`[Urgent Alerts] Alerting for ${lead.name}. Due: ${alertDueTime.toISOString()}, Now: ${nowIST.toISOString()}`);
@@ -1562,7 +1635,7 @@ exports.checkUrgentLeads = functions.pubsub.schedule('every 1 minutes').onRun(as
                 leadName: lead.name,
                 leadPhone: lead.contactPhone || lead.phone,
                 project: lead.project || 'New Lead',
-                context: `🚨 *URGENT - 5 MINUTE SLA BREACHED* 🚨\n\n*Lead:* ${lead.name}\n\n⚠️ This lead was assigned but has not been contacted within the mandatory 5-minute window.\n\n*Type:* ${lead.isPooled ? 'Staggered Pool' : 'Immediate'}\n*Assigned to:* ${ownerName}\n\n_Automated Mojo CRM Alert_`
+                context: `🚨 *URGENT - 30 MINUTE SLA BREACHED* 🚨\n\n*Lead:* ${lead.name}\n\n⚠️ This lead was assigned but has not been contacted within the mandatory 30-minute window.\n\n*Type:* ${lead.isPooled ? 'Staggered Pool' : 'Immediate'}\n*Assigned to:* ${ownerName}\n\n_Automated Mojo CRM Alert_`
             };
 
             // Notify Dhiraj & Assignee
@@ -1603,24 +1676,36 @@ exports.checkUrgentLeads = functions.pubsub.schedule('every 1 minutes').onRun(as
         
         let updates = {};
         
-        // 1. Stage 16: T+1 Days Alert
+        // 1. Stage 16: T+1 Days Alert (WhatsApp at 24h, Email at 48h)
+        const twoDaysMs = 2 * oneDayMs;
         if (effectiveTimeInStage >= oneDayMs) {
-            const lastT1Sent = lead.lastEscalation16At ? new Date(lead.lastEscalation16At).getTime() : 0;
-            const effectiveTimeSinceLastT1 = lastT1Sent ? getEffectiveTimeMs(lastT1Sent, realNowMs) : effectiveTimeInStage;
-            if (effectiveTimeSinceLastT1 >= oneDayMs) {
-                console.log(`[Urgent Alerts] Stage 16 T+1 escalation for ${lead.name}`);
-                const subject = `Urgent Escalation: ${lead.name} untouched for >1 Day`;
-                const html = getEscalationEmailHtml(
-                    'Lead Untouched for > 24 Hours',
-                    lead.name,
-                    [
-                        { label: 'Current Stage', value: 'Yet to contact' },
-                        { label: 'Time Uncontacted', value: 'Over 24 Hours' },
-                        { label: 'Assignee', value: ownerName }
-                    ]
-                );
-                await sendEmailWithCC('dhiraj@digitalmojo.in', subject, html, ownerEmail);
-                updates.lastEscalation16At = new Date().toISOString();
+            // Tier 1: WhatsApp warning at 24h
+            if (effectiveTimeInStage < twoDaysMs && !lead.whatsappWarned16_24h) {
+                console.log(`[Urgent Alerts] Stage 16 24h WhatsApp warning for ${lead.name}`);
+                if (member && member.phone) {
+                    await sendWatiSessionMessage(member.phone, `⚠️ *24H SLA WARNING* ⚠️\n\n*Lead:* ${lead.name}\n\n⏳ This lead has been in "Yet to contact" for over 24 hours. Please contact them immediately to avoid an escalation penalty.\n\n*Assigned to:* ${ownerName}\n\n_Automated Mojo CRM Alert_`);
+                }
+                updates.whatsappWarned16_24h = true;
+            }
+            // Tier 2: Email escalation at 48h (repeats every 24h after)
+            if (effectiveTimeInStage >= twoDaysMs) {
+                const lastT1Sent = lead.lastEscalation16At ? new Date(lead.lastEscalation16At).getTime() : 0;
+                const effectiveTimeSinceLastT1 = lastT1Sent ? getEffectiveTimeMs(lastT1Sent, realNowMs) : effectiveTimeInStage;
+                if (effectiveTimeSinceLastT1 >= oneDayMs) {
+                    console.log(`[Urgent Alerts] Stage 16 48h+ email escalation for ${lead.name}`);
+                    const subject = `Urgent Escalation: ${lead.name} untouched for >2 Days`;
+                    const html = getEscalationEmailHtml(
+                        'Lead Untouched for > 48 Hours',
+                        lead.name,
+                        [
+                            { label: 'Current Stage', value: 'Yet to contact' },
+                            { label: 'Time Uncontacted', value: 'Over 48 Hours' },
+                            { label: 'Assignee', value: ownerName }
+                        ]
+                    );
+                    await sendEmailWithCC('dhiraj@digitalmojo.in', subject, html, ownerEmail);
+                    updates.lastEscalation16At = new Date().toISOString();
+                }
             }
         }
         
@@ -1848,12 +1933,12 @@ exports.onContactCreate = functions.firestore.document('contacts/{contactId}').o
     console.log(`[Contact Trigger] New contact created: ${contactId}, Source: ${contactData.source}`);
 
     // Determine if this should trigger an opportunity
-    // We filter for 'adcalculator' as requested, but we can also handle general website leads
     const isAdCalculator = contactData.source === 'adcalculator' ||
         (contactData.website && contactData.website.includes('adcalculator.digitalmojo.in'));
+    const isFreeAudit = contactData.source === 'free audit landing page';
 
-    if (!isAdCalculator) {
-        console.log(`[Contact Trigger] Skipping - Not an adcalculator lead.`);
+    if (!isAdCalculator && !isFreeAudit) {
+        console.log(`[Contact Trigger] Skipping - Not an adcalculator or free audit lead.`);
         return null;
     }
 
@@ -1862,9 +1947,47 @@ exports.onContactCreate = functions.firestore.document('contacts/{contactId}').o
         // 1. Round-Robin Assignment (Rupal vs Veda)
         const { name: assignedName, email: assignedTo } = await getNextAssignee();
 
-        // 2. Map lead fields
+        // 2. Map lead fields and normalize phone number
         const displayLeadName = contactData.name || 'Website Lead';
-        const phone = contactData.phone || contactData.mobile || '';
+        const rawPhone = contactData.phone || contactData.mobile || '';
+        const phone = normalizePhone(rawPhone);
+
+        // 3. Extract non-standard form fields to put into notes tab
+        const standardKeys = [
+            'name', 'phone', 'mobile', 'email', 'company', 'website', 'source', 
+            'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+            'gclid', 'fbclid', 'createdAt', 'submittedAt'
+        ];
+
+        const customFieldLabels = {
+            role: "Your Role",
+            industry: "Your Industry",
+            ads: "Currently Running Paid Ads?",
+            spend: "Monthly Ad Spend",
+            revenue: "Company's Annual Revenue",
+            hire: "When Looking to Hire / Switch Agency?",
+            problem: "#1 Marketing Problem"
+        };
+
+        let notesText = '';
+        Object.entries(contactData).forEach(([key, val]) => {
+            if (!standardKeys.includes(key) && val !== undefined && val !== null) {
+                // Formatting key to a readable title
+                const readableKey = customFieldLabels[key] || 
+                    key.replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
+                notesText += `• **${readableKey}**: ${val}\n`;
+            }
+        });
+
+        let noteContent = `Lead captured from ${isFreeAudit ? 'Free Audit' : 'Ad Calculator'} landing page. Form details:\n` +
+            `• **Name**: ${displayLeadName}\n` +
+            `• **Phone**: ${phone}\n` +
+            `• **Email**: ${contactData.email || 'N/A'}\n` +
+            `• **Website**: ${contactData.website || 'N/A'}`;
+
+        if (notesText.trim() !== '') {
+            noteContent += `\n\n--- Additional Form Details ---\n${notesText.trim()}`;
+        }
 
         const opportunityData = {
             name: contactData.company || displayLeadName,
@@ -1876,33 +1999,37 @@ exports.onContactCreate = functions.firestore.document('contacts/{contactId}').o
             value: 0,
             companyName: contactData.company || '',
             your_website: contactData.website || '',
-            source: 'Landing Page',
+            source: isFreeAudit ? 'free audit landing page' : 'Landing Page',
             utm_source: contactData.utm_source || '',
             utm_medium: contactData.utm_medium || '',
             utm_campaign: contactData.utm_campaign || '',
-            opportunityType: 'adcalculator',
+            utm_term: contactData.utm_term || '',
+            utm_content: contactData.utm_content || '',
+            gclid: contactData.gclid || '',
+            fbclid: contactData.fbclid || '',
+            opportunityType: isFreeAudit ? 'free audit landing page' : 'adcalculator',
             stage: '16', // 'Yet to contact'
             status: 'Open',
             owner: assignedTo,
             followUpAssignee: assignedTo,
             urgentAlertSent: false,
-            tags: ['adcalculator'],
+            tags: isFreeAudit ? ['free audit landing page'] : ['adcalculator'],
             tasks: [],
             notes: [
                 {
                     id: Date.now().toString(),
-                    content: `Lead captured from Ad Calculator landing page. Form details: Name: ${displayLeadName}, Phone: ${phone}, Email: ${contactData.email || 'N/A'}, Website: ${contactData.website || 'N/A'}`,
+                    content: noteContent,
                     createdAt: new Date().toISOString()
                 }
             ],
             followUpDate: '',
             followUpRead: false,
-            createdAt: new Date().toISOString(),
+            createdAt: contactData.submittedAt || new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             activities: [{
                 id: Date.now().toString(),
                 type: 'status_change',
-                description: `Opportunity created automatically from Ad Calculator landing page`,
+                description: `Opportunity created automatically from ${isFreeAudit ? 'Free Audit' : 'Ad Calculator'} landing page`,
                 timestamp: new Date().toISOString(),
                 userName: 'Website Automation'
             }]
@@ -1949,15 +2076,14 @@ exports.onOpportunityCreate = functions.firestore.document('opportunities/{oppor
             if (user) assignedName = user.name;
         }
 
-        // 2. Trigger Welcome & Assets Sequence
-        const phone = data.phone || data.contactPhone;
-        if (phone && !data.isAIPending) {
-            // We use a slight delay to ensure Firestore document is fully propagate/available
-            // although in onCreate it should be fine.
-            await sendLeadWelcomeSequence(phone, data.contactName || data.name, assignedName, opportunityId);
-        } else if (data.isAIPending) {
-            console.log(`[Opportunity Trigger] ⏸️ Skipping Wati Welcome Sequence for ${opportunityId} (AI Pending)`);
-        }
+        // 2. Welcome & Assets Sequence — DISABLED (no longer auto-sending discovery form / hi message to leads)
+        // The manual "Send Sales Assets" button in the CRM UI still works via the sendSalesAssets callable.
+        // const phone = data.phone || data.contactPhone;
+        // if (phone && !data.isAIPending) {
+        //     await sendLeadWelcomeSequence(phone, data.contactName || data.name, assignedName, opportunityId);
+        // } else if (data.isAIPending) {
+        //     console.log(`[Opportunity Trigger] ⏸️ Skipping Wati Welcome Sequence for ${opportunityId} (AI Pending)`);
+        // }
 
     } catch (error) {
         console.error(`[Opportunity Trigger] Error processing ${opportunityId}:`, error.message);
@@ -2476,7 +2602,20 @@ exports.metaWebhook = functions.https.onRequest(async (req, res) => {
             }
 
             // Round-Robin Assignment
-            const { name: assignedName, email: assignedTo } = await getNextAssignee();
+            const rawCampaign = leadData?.campaign_name || '';
+            const mapping = getCampaignMapping(rawCampaign);
+
+            let assignedName, assignedTo;
+            let metaCampaign = rawCampaign;
+            if (mapping) {
+                assignedName = mapping.assigneeName;
+                assignedTo = mapping.assigneeEmail;
+                metaCampaign = mapping.newName;
+            } else {
+                const nextAssignee = await getNextAssignee();
+                assignedName = nextAssignee.name;
+                assignedTo = nextAssignee.email;
+            }
 
             const opportunityData = {
                 name: fullName,
@@ -2486,7 +2625,7 @@ exports.metaWebhook = functions.https.onRequest(async (req, res) => {
                 phone: normalizedPhone,
                 value: 0, // Initial value
                 source: 'Meta Ads',
-                meta_campaign: leadData?.campaign_name || '',
+                meta_campaign: metaCampaign,
                 meta_adset: leadData?.adset_name || '',
                 opportunityType: 'Meta Ads',
                 stage: '16',
